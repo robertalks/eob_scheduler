@@ -1,0 +1,79 @@
+# Copy this file to config.yaml and edit with your real values.
+
+timezone: "Europe/Prague"
+
+# Define the HIGH-tariff (VT) windows only — everything NOT listed here is
+# treated as low tariff (NT), when the water heater should run.
+#
+# These are your actual confirmed D45d windows (given 2026-09-13), converted
+# from your low-tariff times to their complementary high-tariff gaps:
+#   weekday low tariff:  00:00-00:10;01:10-06:56;07:55-14:11;15:10-18:26;19:25-24:00
+#   weekend/holiday low: 00:00-03:36;04:35-10:06;11:05-16:06;17:05-19:36;20:35-24:00
+# "weekend" here also covers Czech public holidays (see holiday_country
+# below) -- D45d treats holidays the same as weekends.
+high_tariff_windows:
+  - days: ["weekday"]
+    start: "00:10"
+    end: "01:10"
+  - days: ["weekday"]
+    start: "06:56"
+    end: "07:55"
+  - days: ["weekday"]
+    start: "14:11"
+    end: "15:10"
+  - days: ["weekday"]
+    start: "18:26"
+    end: "19:25"
+  - days: ["weekend"]
+    start: "03:36"
+    end: "04:35"
+  - days: ["weekend"]
+    start: "10:06"
+    end: "11:05"
+  - days: ["weekend"]
+    start: "16:06"
+    end: "17:05"
+  - days: ["weekend"]
+    start: "19:36"
+    end: "20:35"
+
+# ISO country code for public holidays, treated as "weekend" days above.
+# Set to null/omit to disable holiday awareness (holidays would then use
+# the weekday schedule, which is wrong for D45d).
+holiday_country: "CZ"
+
+# Target temperature (Celsius) the thermostat is set to during LOW
+# tariff -- the thermostat's own local ambient sensor decides when to
+# actually heat, using its normal hysteresis behavior. During HIGH
+# tariff, the scheduler sends a genuine force-off command instead (not
+# just a low temperature) -- confirmed via direct observation to
+# physically disable the output regardless of ambient temperature.
+#
+# Only 0.0C ("off") and values up to 39.0C have been confirmed against
+# the real device so far -- TEMP_MIN_C/TEMP_MAX_C in eob_lib.py caps
+# this range at 3.0-39.0C as a conservative guess. If you need a higher
+# setpoint (e.g. 55C), first run:
+#   python eob_client.py --test <unique_id> <mqtt_password> <target_temp>
+# with a value above 39.0 -- it will refuse until you deliberately widen
+# TEMP_MAX_C in eob_lib.py, so you don't accidentally send an
+# unverified value to the real device.
+target_temperature: 19.0
+
+# How the scheduler talks to the thermostat.
+# The BT725 is controlled via Elektrobock's cloud MQTT broker
+# (mqtt.elbock.cz:8883) -- confirmed from a real traffic capture, see
+# CAPTURE_GUIDE.md and eob_lib.py for details.
+thermostat:
+  mode: "live"              # "live" for the real device, "mock" to test
+  unique_id: "031608"       # your thermostat's ID -- from the MQTT topic
+                             # your app used (PTWIFI/I/<this>), or captured
+                             # directly from its MQTT CONNECT packet
+  mqtt_password: ""         # the MQTT password captured from your app's
+                             # MQTT CONNECT packet (see CAPTURE_GUIDE.md).
+                             # Keep this file out of version control.
+
+# How often the scheduler checks the clock, in seconds.
+poll_interval_seconds: 60
+
+# Path for the scheduler's log file.
+log_file: "scheduler.log"
