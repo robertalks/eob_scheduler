@@ -64,11 +64,11 @@ target_temperature: 19.0
 # (mqtt.elbock.cz:8883) -- confirmed from a real traffic capture, see
 # CAPTURE_GUIDE.md and eob_lib.py for details.
 thermostat:
-  mode: "live"              # "live" for the real device, "mock" to test
-  unique_id: "031608"       # your thermostat's ID -- from the MQTT topic
+  mode: "live"               # "live" for the real device, "mock" to test
+  unique_id: "XXXXXX"        # your thermostat's ID -- from the MQTT topic
                              # your app used (PTWIFI/I/<this>), or captured
                              # directly from its MQTT CONNECT packet
-  mqtt_password: ""         # the MQTT password captured from your app's
+  mqtt_password: ""          # the MQTT password captured from your app's
                              # MQTT CONNECT packet (see CAPTURE_GUIDE.md).
                              # Keep this file out of version control.
 
