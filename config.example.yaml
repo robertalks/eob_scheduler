@@ -42,22 +42,35 @@ high_tariff_windows:
 # the weekday schedule, which is wrong for D45d).
 holiday_country: "CZ"
 
-# Target temperature (Celsius) the thermostat is set to during LOW
-# tariff -- the thermostat's own local ambient sensor decides when to
-# actually heat, using its normal hysteresis behavior. During HIGH
-# tariff, the scheduler sends a genuine force-off command instead (not
-# just a low temperature) -- confirmed via direct observation to
-# physically disable the output regardless of ambient temperature.
+# Where the low-tariff target temperature comes from:
+#   "config" (default) -- always use target_temperature below, overriding
+#     any manual change made via the app at the next tariff transition.
+#   "device" -- snapshots whatever temperature was ACTUALLY RUNNING right
+#     before the most recent high-tariff (off) period started, and
+#     reapplies that same value on resume. A manual change you make via
+#     the app WHILE it's genuinely on is respected; a change made while
+#     it's off (high tariff) is deliberately ignored, since that isn't
+#     "what was running". target_temperature below still acts as a
+#     fallback if no snapshot exists yet (e.g. the very first run).
+temperature_source: "device"
+
+# Target temperature (Celsius). Always used when temperature_source is
+# "config"; used only as a fallback when temperature_source is "device".
+# The thermostat's own local ambient sensor decides when to actually
+# heat, using its normal hysteresis behavior. During HIGH tariff, the
+# scheduler sends a genuine force-off command instead (not just a low
+# temperature) -- confirmed via direct observation to physically disable
+# the output regardless of ambient temperature.
 #
 # Only 0.0C ("off") and values up to 39.0C have been confirmed against
 # the real device so far -- TEMP_MIN_C/TEMP_MAX_C in eob_lib.py caps
-# this range at 3.0-39.0C as a conservative guess. If you need a higher
+# this range at 5.0-39.0C as a conservative guess. If you need a higher
 # setpoint (e.g. 55C), first run:
 #   python eob_client.py --test <unique_id> <mqtt_password> <target_temp>
 # with a value above 39.0 -- it will refuse until you deliberately widen
 # TEMP_MAX_C in eob_lib.py, so you don't accidentally send an
 # unverified value to the real device.
-target_temperature: 19.0
+target_temperature: 15.0
 
 # How the scheduler talks to the thermostat.
 # The BT725 is controlled via Elektrobock's cloud MQTT broker
@@ -76,4 +89,4 @@ thermostat:
 poll_interval_seconds: 60
 
 # Path for the scheduler's log file.
-log_file: "scheduler.log"
+log_file: "eob_scheduler.log"

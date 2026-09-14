@@ -76,14 +76,19 @@ _FORCE_OFF_OPCODE = 0x2C        # confirmed (value 0x00 only): forces off
 # push from the device.
 _STATUS_REQUEST_PAYLOAD = bytes.fromhex("7fff000880020000801b0000")
 
-_STATUS_MARKER_PREFIX = bytes.fromhex("800240" "0a1400")  # bytes 0-5
-_STATUS_MARKER_SUFFIX = bytes.fromhex("0108")              # bytes 7-8
+# Marker for locating the target-temperature byte in a status response.
+# `None` marks a position that's genuinely variable (confirmed by
+# comparing multiple real captures -- see eob_lib.py history/README for
+# how this was found). Everything else here has been constant across
+# every sample collected so far:
+#   80 02 40 0a [varies] 00 [varies] 01 08 <target_temp_byte>
+_STATUS_MARKER_PATTERN = [0x80, 0x02, 0x40, 0x0A, None, 0x00, None, 0x01, 0x08]
 
 # Half-degree encoding: value_byte = round(temp_C * 2). Directly confirmed
 # for 10.0-19.0C; the wider range below is a conservative guess beyond
 # that -- narrow it down with eob_client.py --test if you rely on values
 # near the edges.
-TEMP_MIN_C = 3.0
+TEMP_MIN_C = 5.0
 TEMP_MAX_C = 39.0
 
 
@@ -107,14 +112,15 @@ def _build_force_off_command() -> bytes:
 
 
 def _find_status_block(payload: bytes) -> int | None:
-    plen = len(_STATUS_MARKER_PREFIX)
-    slen = len(_STATUS_MARKER_SUFFIX)
-    for i in range(len(payload) - plen - 1 - slen + 1):
-        if payload[i:i + plen] != _STATUS_MARKER_PREFIX:
-            continue
-        suffix_start = i + plen + 1
-        if payload[suffix_start:suffix_start + slen] == _STATUS_MARKER_SUFFIX:
-            return suffix_start + slen
+    """Returns the index of the target-temperature byte, or None if the
+    pattern isn't found. `None` entries in _STATUS_MARKER_PATTERN are
+    wildcards -- positions confirmed to vary between real captures."""
+    plen = len(_STATUS_MARKER_PATTERN)
+    for i in range(len(payload) - plen):
+        window = payload[i:i + plen]
+        if all(expected is None or actual == expected
+               for actual, expected in zip(window, _STATUS_MARKER_PATTERN)):
+            return i + plen
     return None
 
 
@@ -150,9 +156,11 @@ class Bt725Client:
         self._client.username_pw_set(self.username, self.password)
         self._client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
         self._client.on_connect = self._on_connect
+        self._client.on_subscribe = self._on_subscribe
         self._client.on_message = self._on_message
 
         self._connected = threading.Event()
+        self._subscribed = threading.Event()
         self._status_event = threading.Event()
         self.last_status_payload: bytes | None = None
         self.last_status: dict = {}
@@ -164,6 +172,14 @@ class Bt725Client:
             self._connected.set()
         else:
             logger.error("MQTT connect failed, rc=%s", rc)
+
+    def _on_subscribe(self, client, userdata, mid, granted_qos):
+        # Confirms the broker has actually activated our subscription --
+        # only after this can we be sure a device reply won't be missed.
+        # Without waiting for this, connect() could return before the
+        # subscription is live, silently dropping a fast reply to any
+        # request sent immediately afterward (e.g. request_status()).
+        self._subscribed.set()
 
     def _on_message(self, client, userdata, msg):
         logger.debug("Status update on %s: %s", msg.topic, msg.payload.hex())
@@ -179,11 +195,18 @@ class Bt725Client:
         if not self._connected.wait(timeout):
             self._client.loop_stop()
             raise TimeoutError(f"Could not connect to {MQTT_BROKER_HOST} within {timeout}s")
+        if not self._subscribed.wait(timeout):
+            self._client.loop_stop()
+            raise TimeoutError(
+                f"Connected but subscription to {self.sub_topic} was not "
+                f"confirmed within {timeout}s"
+            )
 
     def disconnect(self) -> None:
         self._client.loop_stop()
         self._client.disconnect()
         self._connected.clear()
+        self._subscribed.clear()
 
     def set_temperature(self, temp_c: float) -> None:
         payload = _build_set_temperature_command(temp_c)
@@ -201,7 +224,7 @@ class Bt725Client:
         )
         self._client.publish(self.pub_topic, payload, qos=0, retain=False)
 
-    def request_status(self, timeout: float = 3.0) -> dict:
+    def request_status(self, timeout: float = 10.0) -> dict:
         """Ask the device for a status push and wait (briefly) for it.
         Returns the parsed dict (see parse_status), or {} on timeout."""
         self._status_event.clear()
@@ -227,6 +250,12 @@ class ThermostatClient:
         """Returns either a float (last target temp) or the string 'off'."""
         raise NotImplementedError
 
+    def get_current_target_temperature(self) -> float | None:
+        """Reads the device's OWN idea of its current target temperature
+        (e.g. whatever the user last set via the official app), regardless
+        of what this client last sent. Returns None if unavailable."""
+        raise NotImplementedError
+
 
 class MockThermostat(ThermostatClient):
     def __init__(self):
@@ -242,6 +271,9 @@ class MockThermostat(ThermostatClient):
 
     def get_last_state(self):
         return self._state
+
+    def get_current_target_temperature(self) -> float | None:
+        return None  # no real device to read from in mock mode
 
 
 class Bt725LiveThermostat(ThermostatClient):
@@ -263,6 +295,10 @@ class Bt725LiveThermostat(ThermostatClient):
 
     def get_last_state(self):
         return self._state
+
+    def get_current_target_temperature(self) -> float | None:
+        status = self._client.request_status()
+        return status.get("target_temp_c")
 
 
 def build_client(config: dict) -> ThermostatClient:

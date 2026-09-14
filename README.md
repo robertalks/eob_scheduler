@@ -6,6 +6,10 @@ Controls your Elektrobock BT725 WiFi thermostat according to your ČEZ
 - **Low tariff**: sets a target temperature. The thermostat's own local
   ambient sensor decides when to actually heat (normal hysteresis
   behavior) — this client doesn't need to know or replicate that logic.
+  The target comes from either a fixed value in `config.yaml`, or — with
+  `temperature_source: "device"` — whatever temperature is currently set
+  on the device (e.g. manually via the official app), so a manual change
+  is respected instead of overwritten. See "Temperature source" below.
 - **High tariff**: sends a genuine **off** command. This disables the
   output outright — it's not just a low setpoint the ambient could still
   cross, nothing runs during high tariff, period.
@@ -83,6 +87,33 @@ config.yaml    -- your D45d switching times, target temperature, and
 7. Make it survive reboots (Linux, e.g. Raspberry Pi) — see `systemd/` unit
    file included.
 
+## Temperature source: fixed config value, or read from the device
+
+`temperature_source` in `config.yaml` controls where the low-tariff
+target temperature comes from:
+
+- **`"config"`** (default): always use `target_temperature` from the
+  config file. If you manually change the temperature via the app during
+  a low-tariff period, it'll be overwritten back to this fixed value the
+  next time the scheduler applies a change (at the next high→low
+  transition).
+- **`"device"`**: snapshots whatever temperature was *actually running*
+  right before the most recent high-tariff (off) period started — read
+  right as the scheduler is about to force it off — and reapplies that
+  same snapshot on the next resume. A manual change you make via the app
+  **while it's genuinely on** is respected and carried forward; a change
+  made **while it's off** (during high tariff) is deliberately ignored,
+  since that isn't "what was running" — the device's status would
+  reflect it, but the scheduler intentionally doesn't sample status
+  during the off period, only right at the moment it switches off.
+  `target_temperature` is still used as a fallback if no snapshot exists
+  yet (e.g. the very first run, before any off-transition has happened).
+
+This works because `force_off` (used during high tariff) and
+`set_temperature` (used during low tariff) are different underlying
+commands — turning the device off doesn't erase its memory of the last
+temperature you set, so that value can be read back later.
+
 ## Safety notes
 
 - `--dry-run` logs what it *would* do without calling the thermostat at all.
@@ -91,7 +122,7 @@ config.yaml    -- your D45d switching times, target temperature, and
   every poll), so you won't hammer the device.
 - If the thermostat becomes unreachable, the scheduler logs the failure and
   retries next cycle — it never assumes success.
-- Temperatures outside the current 3.0–39.0C assumed range are rejected
+- Temperatures outside the current 5.0–39.0C assumed range are rejected
   rather than silently clamped or sent as-is, specifically so an untested
   value never reaches the real device by accident.
 - D45d treats public holidays the same as weekends. `holiday_country: "CZ"`
