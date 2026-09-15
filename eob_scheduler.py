@@ -126,7 +126,17 @@ def run_once(
 
     else:
         new_snapshot = state.last_on_target
-        if temperature_source == "device":
+        # Only trust a live read here if we KNOW we're coming from a
+        # genuinely-managed low-tariff period (state.last_is_low is
+        # True) -- if this is a cold start into an already-high-tariff
+        # period (state.last_is_low is None), the device could have been
+        # off for a while already, and a "current" read at this moment
+        # doesn't reflect "what was running right before going off" at
+        # all. Snapshotting it anyway was the bug: it read whatever the
+        # device reports while idle (observed as 0.0C) and wrongly
+        # treated that as a real value to reapply later.
+
+        if temperature_source == "device" and state.last_is_low is True:
             current = client.get_current_target_temperature()
             if current is not None:
                 new_snapshot = current
@@ -141,6 +151,14 @@ def run_once(
                     "snapshot (%s).",
                     f"{state.last_on_target:.1f}C" if state.last_on_target is not None else "none",
                 )
+        elif temperature_source == "device":
+            logging.info(
+                "temperature_source=device: starting up already in a "
+                "high-tariff period, so not trusting a snapshot read here "
+                "(nothing genuinely just turned off) -- the next low-tariff "
+                "resume will read a live value or use the config fallback "
+                "instead."
+            )
         logging.info("Tariff state changed -> high tariff: power OFF")
         try:
             client.power_off()
