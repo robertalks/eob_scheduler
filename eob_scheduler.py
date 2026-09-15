@@ -89,10 +89,12 @@ def run_once(
                     "temperature_source=device: reapplying %.1fC snapshotted "
                     "from before the last off period.", target_temp,
                 )
-            else:
-                # No snapshot yet (e.g. the very first run) -- a live read
-                # from the device is a better guess than the hardcoded
-                # config fallback, so try that first.
+            elif state.last_is_low is None:
+                # A true cold start, mid-low-tariff period -- we don't
+                # know the device's state, but there's no reason to think
+                # WE just forced it off, so a live read is a reasonable
+                # guess (unlike the case below, where the device is
+                # definitely still off at this exact moment).
                 current = client.get_current_target_temperature()
                 if current is not None:
                     target_temp = current
@@ -108,6 +110,19 @@ def run_once(
                         "reading available, falling back to config "
                         "target_temperature=%.1fC.", fallback_temp,
                     )
+            else:
+                # state.last_is_low is False: we know for a fact the
+                # device is still off right now (we haven't sent the
+                # resume command yet) -- a live read here would just read
+                # the "still off" state, not anything meaningful. Use the
+                # config fallback instead of trusting that read.
+                target_temp = fallback_temp
+                logging.info(
+                    "temperature_source=device: no snapshot from the last "
+                    "off period, and the device is still off right now so "
+                    "a live read wouldn't be meaningful -- using config "
+                    "target_temperature=%.1fC.", fallback_temp,
+                )
         else:
             target_temp = fallback_temp
         logging.info(
