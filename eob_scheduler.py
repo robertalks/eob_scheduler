@@ -6,7 +6,7 @@ from one of two sources, controlled by config.yaml's `temperature_source`:
   - "config" (default): always use the fixed `target_temperature` value.
   - "device": use whatever temperature was ACTUALLY RUNNING right before
     the most recent high-tariff (off) period started -- captured by
-    reading the device's current target right as we're about to force it
+    reading the device's current target right as we're about to powers it
     off, then reapplying that same snapshot on the next resume. This
     deliberately does NOT pick up changes made through the app while the
     device was off (that state isn't "what was running", so it's
@@ -16,7 +16,7 @@ from one of two sources, controlled by config.yaml's `temperature_source`:
     available yet (e.g. the very first run, before any off-transition has
     happened, or a failed status request).
 
-During high tariff: sends a genuine force-off command, so nothing runs
+During high tariff: sends a genuine power-off command, so nothing runs
 regardless of ambient temperature. This uses a different underlying
 command than set_temperature, so the device's own "last target" memory
 survives being turned off -- that's what makes "device" mode possible.
@@ -141,9 +141,9 @@ def run_once(
                     "snapshot (%s).",
                     f"{state.last_on_target:.1f}C" if state.last_on_target is not None else "none",
                 )
-        logging.info("Tariff state changed -> high tariff: force OFF")
+        logging.info("Tariff state changed -> high tariff: power OFF")
         try:
-            client.force_off()
+            client.power_off()
         except NotImplementedError as e:
             logging.error("Thermostat driver not implemented yet: %s", e)
             return state

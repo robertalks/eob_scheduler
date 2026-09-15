@@ -4,7 +4,7 @@ code lives in eob_lib.py -- this file is just the command-line tool.
 Usage:
     python eob_client.py --test <unique_id> <mqtt_password> <target_temp_C>
         Tests the full off -> set_temperature sequence eob_scheduler.py
-        actually uses: forces off, waits, sets the target temp, waits.
+        actually uses: powers off, waits, sets the target temp, waits.
         Watch the app / thermostat display AND listen for the relay at
         each step to confirm both the off command and the
         resume-after-off behavior work as expected.
@@ -51,7 +51,7 @@ def run_test(unique_id: str, mqtt_password: str, target_temp: float) -> None:
 
     print("Forcing OFF in 3s (this is what happens on a high-tariff transition)...")
     time.sleep(3)
-    client.force_off()
+    client.power_off()
     print("Sent. Check the app/display AND listen for the relay. Waiting 8s...")
     time.sleep(8)
 

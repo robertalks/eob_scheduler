@@ -25,7 +25,7 @@ SET TARGET TEMPERATURE (confirmed):
     0x1e/0x20/0x22/0x1e. Use this for the low-tariff period -- the
     thermostat's own local sensor decides when to actually heat.
 
-FORCE OFF (confirmed):
+POWER OFF (confirmed):
     7f ff 00 07 00 02 00 03 01 2c 00
     Confirmed via direct observation: sending this made the real relay
     physically click off. Use this for the high-tariff period -- it does
@@ -70,7 +70,7 @@ TOPIC_BASE = "PTWIFI"
 # [opcode][value].
 _SET_PREFIX = bytes.fromhex("7fff00070002000301")
 _SET_TEMPERATURE_OPCODE = 0x28  # confirmed: sets target temperature
-_FORCE_OFF_OPCODE = 0x2C        # confirmed (value 0x00 only): forces off
+_POWER_OFF_OPCODE = 0x2C        # confirmed (value 0x00 only): powers off
 
 # Confirmed from capture: publishing this exact payload requests a status
 # push from the device.
@@ -107,8 +107,8 @@ def _build_set_temperature_command(temp_c: float) -> bytes:
     return _SET_PREFIX + bytes([_SET_TEMPERATURE_OPCODE, temperature_to_byte(temp_c)])
 
 
-def _build_force_off_command() -> bytes:
-    return _SET_PREFIX + bytes([_FORCE_OFF_OPCODE, 0x00])
+def _build_power_off_command() -> bytes:
+    return _SET_PREFIX + bytes([_POWER_OFF_OPCODE, 0x00])
 
 
 def _find_status_block(payload: bytes) -> int | None:
@@ -216,10 +216,10 @@ class Bt725Client:
         )
         self._client.publish(self.pub_topic, payload, qos=0, retain=False)
 
-    def force_off(self) -> None:
-        payload = _build_force_off_command()
+    def power_off(self) -> None:
+        payload = _build_power_off_command()
         logger.info(
-            "Publishing FORCE OFF to %s: %s",
+            "Publishing POWER OFF to %s: %s",
             self.pub_topic, payload.hex(),
         )
         self._client.publish(self.pub_topic, payload, qos=0, retain=False)
@@ -243,7 +243,7 @@ class ThermostatClient:
     def set_temperature(self, temp_c: float) -> None:
         raise NotImplementedError
 
-    def force_off(self) -> None:
+    def power_off(self) -> None:
         raise NotImplementedError
 
     def get_last_state(self):
@@ -265,8 +265,8 @@ class MockThermostat(ThermostatClient):
         logger.info("[MOCK] set_temperature(%.1fC)", temp_c)
         self._state = temp_c
 
-    def force_off(self) -> None:
-        logger.info("[MOCK] force_off()")
+    def power_off(self) -> None:
+        logger.info("[MOCK] power_off()")
         self._state = "off"
 
     def get_last_state(self):
@@ -289,8 +289,8 @@ class Bt725LiveThermostat(ThermostatClient):
         self._client.set_temperature(temp_c)
         self._state = temp_c
 
-    def force_off(self) -> None:
-        self._client.force_off()
+    def power_off(self) -> None:
+        self._client.power_off()
         self._state = "off"
 
     def get_last_state(self):

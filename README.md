@@ -40,7 +40,7 @@ In short:
 python eob_client.py --test <unique_id> <mqtt_password> <target_temp_C>
 ```
 
-This forces the thermostat off, waits, then sets your target temperature
+This powers the thermostat off, waits, then sets your target temperature
 — exactly the sequence the scheduler uses on a tariff transition. Watch
 the app/thermostat display **and** listen for the relay at each step.
 The part that specifically needs your eyes: after the "set temperature"
@@ -56,7 +56,7 @@ eob_lib.py     -- reusable driver: talks to the thermostat over its real
                   eob_scheduler.py)
 eob_client.py  -- manual testing/diagnostic CLI (--test, --status)
 eob_scheduler.py -- daemon: polls eob_tariff.py every minute, sets
-                  temperature or forces off only when the tariff state
+                  temperature or powers off only when the tariff state
                   actually changes
 config.yaml    -- your D45d switching times, target temperature, and
                   thermostat connection info
@@ -99,7 +99,7 @@ target temperature comes from:
   transition).
 - **`"device"`**: snapshots whatever temperature was *actually running*
   right before the most recent high-tariff (off) period started — read
-  right as the scheduler is about to force it off — and reapplies that
+  right as the scheduler is about to power it off — and reapplies that
   same snapshot on the next resume. A manual change you make via the app
   **while it's genuinely on** is respected and carried forward; a change
   made **while it's off** (during high tariff) is deliberately ignored,
@@ -109,7 +109,7 @@ target temperature comes from:
   `target_temperature` is still used as a fallback if no snapshot exists
   yet (e.g. the very first run, before any off-transition has happened).
 
-This works because `force_off` (used during high tariff) and
+This works because `power_off` (used during high tariff) and
 `set_temperature` (used during low tariff) are different underlying
 commands — turning the device off doesn't erase its memory of the last
 temperature you set, so that value can be read back later.

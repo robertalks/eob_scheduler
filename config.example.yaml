@@ -58,7 +58,7 @@ temperature_source: "device"
 # "config"; used only as a fallback when temperature_source is "device".
 # The thermostat's own local ambient sensor decides when to actually
 # heat, using its normal hysteresis behavior. During HIGH tariff, the
-# scheduler sends a genuine force-off command instead (not just a low
+# scheduler sends a genuine power-off command instead (not just a low
 # temperature) -- confirmed via direct observation to physically disable
 # the output regardless of ambient temperature.
 #
