@@ -211,7 +211,7 @@ class Bt725Client:
     def set_temperature(self, temp_c: float) -> None:
         payload = _build_set_temperature_command(temp_c)
         logger.info(
-            "Publishing SET TEMPERATURE %.1fC to %s: %s",
+            "Sending SET TEMPERATURE %.1fC to %s: %s",
             temp_c, self.pub_topic, payload.hex(),
         )
         self._client.publish(self.pub_topic, payload, qos=0, retain=False)
@@ -219,7 +219,7 @@ class Bt725Client:
     def power_off(self) -> None:
         payload = _build_power_off_command()
         logger.info(
-            "Publishing POWER OFF to %s: %s",
+            "Sending POWER OFF to %s: %s",
             self.pub_topic, payload.hex(),
         )
         self._client.publish(self.pub_topic, payload, qos=0, retain=False)

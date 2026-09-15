@@ -5,11 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Edit these two paths for your setup:
+# Edit User, Group and WorkingDirectory, before installing service file
 User=user
 Group=group
 WorkingDirectory=/home/user/eob_scheduler
-ExecStart=/usr/bin/python3 /home/user/eob_scheduler/eob_scheduler.py --config /home/user/eob_scheduler/config.yaml
+ExecStart=/usr/bin/python3 eob_scheduler.py --config config.yaml
 Restart=on-failure
 RestartSec=15
 
