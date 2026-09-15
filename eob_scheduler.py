@@ -16,10 +16,24 @@ from one of two sources, controlled by config.yaml's `temperature_source`:
     available yet (e.g. the very first run, before any off-transition has
     happened, or a failed status request).
 
+    IMPORTANT (found 2026-09-15): the device reports 0.0C as its live
+    target_temp_c reading whenever it's genuinely off -- this isn't a
+    read failure, it's a real value that just means "off", and using it
+    as a target crashes (0.0C is outside the valid range). So every live
+    read in this file is checked with _is_plausible_target() before
+    being trusted; a 0.0C (or otherwise out-of-range) reading is treated
+    exactly like "no reading available" and falls through to the next
+    fallback instead.
+
 During high tariff: sends a genuine power-off command, so nothing runs
 regardless of ambient temperature. This uses a different underlying
 command than set_temperature, so the device's own "last target" memory
-survives being turned off -- that's what makes "device" mode possible.
+*would* survive being turned off in principle -- but in practice, a live
+read while off just returns 0.0C (see above), so this client never
+relies on reading live status while the device is known to be off; it
+only reads right before forcing off (while still genuinely on) or as a
+best-effort guess on a true cold start, always through the same
+plausibility check.
 
 Usage:
     python eob_scheduler.py                 # run for real, using config.yaml
@@ -37,7 +51,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from eob_lib import build_client
+from eob_lib import build_client, TEMP_MIN_C
 from eob_tariff import TariffSchedule
 
 
@@ -57,6 +71,14 @@ def setup_logging(log_file: str, dry_run: bool) -> None:
         else "%(asctime)s [%(levelname)s] %(message)s",
         handlers=handlers,
     )
+
+
+def _is_plausible_target(temp: float | None) -> bool:
+    """A live target_temp_c reading is only meaningful if it's a real
+    value the device could actually be set to. 0.0C (and anything below
+    TEMP_MIN_C) means the device is off, not "targeting 0 degrees" --
+    treat that the same as no reading at all."""
+    return temp is not None and temp >= TEMP_MIN_C
 
 
 @dataclass
@@ -89,14 +111,13 @@ def run_once(
                     "temperature_source=device: reapplying %.1fC snapshotted "
                     "from before the last off period.", target_temp,
                 )
-            elif state.last_is_low is None:
-                # A true cold start, mid-low-tariff period -- we don't
-                # know the device's state, but there's no reason to think
-                # WE just forced it off, so a live read is a reasonable
-                # guess (unlike the case below, where the device is
-                # definitely still off at this exact moment).
+            else:
+                # No snapshot yet -- try a live read as a best-effort
+                # guess, but only trust it if it's a plausible real value
+                # (see _is_plausible_target: 0.0C means the device is
+                # currently off, not a genuine target to reapply).
                 current = client.get_current_target_temperature()
-                if current is not None:
+                if _is_plausible_target(current):
                     target_temp = current
                     logging.info(
                         "temperature_source=device: no snapshot yet, read "
@@ -106,23 +127,12 @@ def run_once(
                 else:
                     target_temp = fallback_temp
                     logging.warning(
-                        "temperature_source=device: no snapshot and no live "
-                        "reading available, falling back to config "
-                        "target_temperature=%.1fC.", fallback_temp,
+                        "temperature_source=device: no snapshot and no "
+                        "plausible live reading available (got %s), "
+                        "falling back to config target_temperature=%.1fC.",
+                        f"{current:.1f}C" if current is not None else "none",
+                        fallback_temp,
                     )
-            else:
-                # state.last_is_low is False: we know for a fact the
-                # device is still off right now (we haven't sent the
-                # resume command yet) -- a live read here would just read
-                # the "still off" state, not anything meaningful. Use the
-                # config fallback instead of trusting that read.
-                target_temp = fallback_temp
-                logging.info(
-                    "temperature_source=device: no snapshot from the last "
-                    "off period, and the device is still off right now so "
-                    "a live read wouldn't be meaningful -- using config "
-                    "target_temperature=%.1fC.", fallback_temp,
-                )
         else:
             target_temp = fallback_temp
         logging.info(
@@ -141,39 +151,22 @@ def run_once(
 
     else:
         new_snapshot = state.last_on_target
-        # Only trust a live read here if we KNOW we're coming from a
-        # genuinely-managed low-tariff period (state.last_is_low is
-        # True) -- if this is a cold start into an already-high-tariff
-        # period (state.last_is_low is None), the device could have been
-        # off for a while already, and a "current" read at this moment
-        # doesn't reflect "what was running right before going off" at
-        # all. Snapshotting it anyway was the bug: it read whatever the
-        # device reports while idle (observed as 0.0C) and wrongly
-        # treated that as a real value to reapply later.
-
-        if temperature_source == "device" and state.last_is_low is True:
+        if temperature_source == "device":
             current = client.get_current_target_temperature()
-            if current is not None:
+            if _is_plausible_target(current):
                 new_snapshot = current
                 logging.info(
                     "temperature_source=device: snapshotting %.1fC (what was "
                     "running) before forcing off.", current,
                 )
             else:
-                logging.warning(
-                    "temperature_source=device: could not read current "
-                    "temperature before forcing off; keeping previous "
-                    "snapshot (%s).",
+                logging.info(
+                    "temperature_source=device: no plausible reading to "
+                    "snapshot before forcing off (got %s) -- keeping "
+                    "previous snapshot (%s).",
+                    f"{current:.1f}C" if current is not None else "none",
                     f"{state.last_on_target:.1f}C" if state.last_on_target is not None else "none",
                 )
-        elif temperature_source == "device":
-            logging.info(
-                "temperature_source=device: starting up already in a "
-                "high-tariff period, so not trusting a snapshot read here "
-                "(nothing genuinely just turned off) -- the next low-tariff "
-                "resume will read a live value or use the config fallback "
-                "instead."
-            )
         logging.info("Tariff state changed -> high tariff: power OFF")
         try:
             client.power_off()
