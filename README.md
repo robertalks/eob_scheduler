@@ -182,3 +182,5 @@ hysteresis logic handles the ambient comparison correctly on its own,
 regardless of whether this client can see that number. If you want to
 pick this investigation back up later, `eob_client.py --status` still
 exists as a diagnostic tool for dumping and searching raw status payloads.
+
+This app has been created using Claude AI
