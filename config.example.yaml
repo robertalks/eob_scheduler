@@ -90,3 +90,16 @@ poll_interval_seconds: 60
 
 # Path for the scheduler's log file.
 log_file: "eob_scheduler.log"
+
+# Thermostat statistics + web dashboard (see eob_stats.py). Polls the
+# device's status (measured temperature, target, relay on/off) over the
+# scheduler's existing MQTT connection and serves charts at
+# http://<this machine>:<port>/ . Not started with --once.
+stats:
+  enabled: true
+  db_file: "eob_stats.db"      # SQLite history, ~1 row per poll
+  poll_interval_seconds: 60
+  web:
+    enabled: true
+    host: "0.0.0.0"            # "127.0.0.1" to keep it local-only
+    port: 8080

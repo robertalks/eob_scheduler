@@ -44,17 +44,34 @@ POWER OFF (confirmed):
     wrongly assumed that and was corrected. Only the confirmed 0x00 "off"
     use is exposed here.)
 
-STATUS READ: still supported (request_status()/parse_status()) for
-target_temp_c only. Actual/ambient temperature was searched for
-extensively across several captures and not found -- most likely because
-the ambient sensor loop is entirely local to the device and never
-reported over MQTT. Not something this client relies on.
+STATUS READ (request_status()/parse_status()):
+    The status request is a multi-message (7f ff) wrapping two queries,
+    80 02 ("therm settings") and 80 1b ("desired temp"). The device
+    answers with frames of the same shape: [type_hi, type_lo, len_hi,
+    len_lo, payload...], where len_hi carries a 0x40 flag (real length =
+    (len_hi & 0x3f) << 8 | len_lo).
+
+    The 80 02 payload (10 bytes, layout taken from the official app's
+    ThermSettingsDataLoader, confirmed 2026-10-16 against the real device:
+    0e 00 07 01 08 1e 00 21 00 29 -> 14.7C measured, 15.0C target, relay off):
+        p[0]           measured temp, whole degrees
+        p[2] & 0x0f    measured temp, tenths      -> 14 + 0.7 = 14.7C
+        p[4] bit 7     measured temp is negative
+        p[4] bit 0     auto (program) mode
+        p[5]           target temp * 2            (0x00 while forced off)
+        p[6] bit 6     relay/output ON
+        p[6] bit 2     off mode
+        p[6] bit 7     temperature sensor error
+    The ambient temperature was missed in earlier captures because it is
+    NOT half-degree encoded like the target -- it's degrees + a tenths
+    nibble.
 """
 from __future__ import annotations
 
 import logging
 import ssl
 import threading
+import time
 
 import paho.mqtt.client as mqtt
 
@@ -76,7 +93,12 @@ _POWER_OFF_OPCODE = 0x2C        # confirmed (value 0x00 only): powers off
 # push from the device.
 _STATUS_REQUEST_PAYLOAD = bytes.fromhex("7fff000880020000801b0000")
 
-# Marker for locating the target-temperature byte in a status response.
+# Status frame type (response to the 80 02 query inside the request above).
+_THERM_SETTINGS_TYPE = (0x80, 0x02)
+_MULTI_MESSAGE_TYPE = (0x7F, 0xFF)
+
+# Legacy fallback: marker for locating the target-temperature byte in a
+# status response, used only if frame parsing finds no 80 02 frame.
 # `None` marks a position that's genuinely variable (confirmed by
 # comparing multiple real captures -- see eob_lib.py history/README for
 # how this was found). Everything else here has been constant across
@@ -124,10 +146,63 @@ def _find_status_block(payload: bytes) -> int | None:
     return None
 
 
+def iter_frames(data: bytes):
+    """Yield (type_hi, type_lo, payload) for every frame in `data`,
+    descending into 7f ff multi-message wrappers."""
+    i = 0
+    while i + 4 <= len(data):
+        hi, lo = data[i], data[i + 1]
+        n = (data[i + 2] & 0x3F) << 8 | data[i + 3]  # 0x40 in len_hi is a flag
+        body = data[i + 4:i + 4 + n]
+        if len(body) < n:
+            return  # truncated / not a frame stream
+        if (hi, lo) == _MULTI_MESSAGE_TYPE:
+            yield from iter_frames(body)
+        else:
+            yield hi, lo, body
+        i += 4 + n
+
+
+def _bit(byte: int, n: int) -> bool:
+    return bool(byte >> n & 1)
+
+
+def parse_therm_settings(p: bytes) -> dict:
+    """Decode an 80 02 status payload (see module docstring)."""
+    if len(p) < 7 or p[0] == 0xFF:
+        return {}  # 0xFF = other device layouts (BT722 etc.), not ours
+    measured = p[0] + (p[2] & 0x0F) / 10
+    if _bit(p[4], 7):
+        measured = -measured
+    return {
+        "target_temp_c": p[5] / 2.0,
+        "measured_temp_c": round(measured, 1),
+        "relay_on": _bit(p[6], 6),
+        "auto_mode": _bit(p[4], 0),
+        "off_mode": _bit(p[6], 2),
+        "sensor_error": _bit(p[6], 7),
+    }
+
+
 def parse_status(payload: bytes) -> dict:
-    """Best-effort parse of a status push. Returns 'target_temp_c'
-    (confirmed: matches whatever was last set via opcode 0x28). No
-    actual/ambient temperature field -- see module docstring."""
+    """Parse a status push. Returns 'target_temp_c' (confirmed: matches
+    whatever was last set via opcode 0x28; 0.0 while forced off) plus
+    'measured_temp_c', 'relay_on', 'auto_mode', 'off_mode',
+    'sensor_error' when the 80 02 frame is present."""
+    for hi, lo, body in iter_frames(payload):
+        if (hi, lo) == _THERM_SETTINGS_TYPE:
+            parsed = parse_therm_settings(body)
+            if parsed:
+                return parsed
+    # Frame stream didn't line up: look for an 80 02 header anywhere.
+    for i in range(len(payload) - 4):
+        if payload[i] == 0x80 and payload[i + 1] == 0x02:
+            n = (payload[i + 2] & 0x3F) << 8 | payload[i + 3]
+            if 8 <= n <= 32 and i + 4 + n <= len(payload):
+                parsed = parse_therm_settings(payload[i + 4:i + 4 + n])
+                if parsed:
+                    return parsed
+    # Legacy fallback (target only).
     result: dict = {}
     block_start = _find_status_block(payload)
     if block_start is None:
@@ -162,8 +237,12 @@ class Bt725Client:
         self._connected = threading.Event()
         self._subscribed = threading.Event()
         self._status_event = threading.Event()
+        # The scheduler and the stats collector share this client from
+        # different threads; serialize request/response round trips.
+        self._request_lock = threading.Lock()
         self.last_status_payload: bytes | None = None
         self.last_status: dict = {}
+        self.last_status_time: float | None = None
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -187,6 +266,7 @@ class Bt725Client:
         parsed = parse_status(msg.payload)
         if parsed:
             self.last_status.update(parsed)
+            self.last_status_time = time.time()
             self._status_event.set()
 
     def connect(self, timeout: float = 10.0) -> None:
@@ -227,10 +307,11 @@ class Bt725Client:
     def request_status(self, timeout: float = 10.0) -> dict:
         """Ask the device for a status push and wait (briefly) for it.
         Returns the parsed dict (see parse_status), or {} on timeout."""
-        self._status_event.clear()
-        self._client.publish(self.pub_topic, _STATUS_REQUEST_PAYLOAD, qos=0, retain=False)
-        if self._status_event.wait(timeout):
-            return dict(self.last_status)
+        with self._request_lock:
+            self._status_event.clear()
+            self._client.publish(self.pub_topic, _STATUS_REQUEST_PAYLOAD, qos=0, retain=False)
+            if self._status_event.wait(timeout):
+                return dict(self.last_status)
         logger.warning("No status response within %.1fs", timeout)
         return {}
 
@@ -256,6 +337,11 @@ class ThermostatClient:
         of what this client last sent. Returns None if unavailable."""
         raise NotImplementedError
 
+    def get_status(self) -> dict:
+        """Full live status (see parse_status): measured_temp_c,
+        target_temp_c, relay_on, ... Returns {} if unavailable."""
+        raise NotImplementedError
+
 
 class MockThermostat(ThermostatClient):
     def __init__(self):
@@ -274,6 +360,25 @@ class MockThermostat(ThermostatClient):
 
     def get_current_target_temperature(self) -> float | None:
         return None  # no real device to read from in mock mode
+
+    def get_status(self) -> dict:
+        # Crude simulation so --dry-run has something to show on the
+        # stats page: heats while a target is set, cools while off.
+        now = time.time()
+        temp = getattr(self, "_sim_temp", 14.0)
+        dt = min(now - getattr(self, "_sim_t", now), 600) / 60
+        self._sim_t = now
+        target = self._state if isinstance(self._state, float) else 0.0
+        on = getattr(self, "_sim_on", False)
+        if target and temp < target - 0.5:
+            on = True
+        elif not target or temp >= target + 0.3:
+            on = False
+        self._sim_on = on
+        self._sim_temp = temp = round(temp + (0.15 if on else -0.02) * dt, 2)
+        return {"target_temp_c": target, "measured_temp_c": round(temp, 1),
+                "relay_on": on, "auto_mode": False,
+                "off_mode": self._state == "off", "sensor_error": False}
 
 
 class Bt725LiveThermostat(ThermostatClient):
@@ -299,6 +404,9 @@ class Bt725LiveThermostat(ThermostatClient):
     def get_current_target_temperature(self) -> float | None:
         status = self._client.request_status()
         return status.get("target_temp_c")
+
+    def get_status(self) -> dict:
+        return self._client.request_status()
 
 
 def build_client(config: dict) -> ThermostatClient:

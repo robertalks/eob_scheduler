@@ -40,6 +40,11 @@ Usage:
     python eob_scheduler.py --dry-run       # log what it would do, touch nothing
     python eob_scheduler.py --config other.yaml
     python eob_scheduler.py --once          # check once and exit (for cron)
+
+If config.yaml has `stats: enabled: true`, the scheduler also records the
+thermostat's measured temperature / relay state and serves a small stats
+dashboard over HTTP -- see eob_stats.py. It reuses the scheduler's own
+MQTT connection and TariffSchedule.
 """
 from __future__ import annotations
 
@@ -51,6 +56,7 @@ from dataclasses import dataclass
 
 import yaml
 
+import eob_stats
 from eob_lib import build_client, TEMP_MIN_C
 from eob_tariff import TariffSchedule
 
@@ -223,6 +229,10 @@ def main() -> None:
         state = run_once(schedule, client, fallback_temp, temperature_source, state)
         logging.info("Current state: %s", "low tariff" if state.last_is_low else "high tariff (off)")
         return
+
+    stats = eob_stats.start_from_config(config, client, schedule)
+    if stats is None:
+        logging.info("Stats/dashboard disabled (set stats.enabled in config.yaml).")
 
     logging.info(
         "Starting scheduler loop (poll every %ss). temperature_source=%s "

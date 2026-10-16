@@ -14,8 +14,8 @@ Controls your Elektrobock BT725 WiFi thermostat according to your ČEZ
   output outright — it's not just a low setpoint the ambient could still
   cross, nothing runs during high tariff, period.
 
-This design deliberately avoids needing to read the thermostat's ambient
-temperature at all (see "What we tried and dropped" below for why).
+Control never depends on the thermostat's ambient temperature, but since
+2026-10-16 it *is* read back for statistics -- see "Stats dashboard" below.
 
 ## Status: both core commands confirmed against the real device
 
@@ -58,6 +58,8 @@ eob_client.py  -- manual testing/diagnostic CLI (--test, --status)
 eob_scheduler.py -- daemon: polls eob_tariff.py every minute, sets
                   temperature or powers off only when the tariff state
                   actually changes
+eob_stats.py   -- optional: records measured temp / relay state to SQLite
+                  and serves a stats web page (started by eob_scheduler.py)
 config.yaml    -- your D45d switching times, target temperature, and
                   thermostat connection info
 ```
@@ -131,7 +133,40 @@ temperature you set, so that value can be read back later.
   "weekend" window will. Set it to `null`/omit it if you'd rather ignore
   holidays entirely (not recommended for D45d).
 
-## What we tried and dropped: reading ambient/current temperature
+## Stats dashboard
+
+With `stats.enabled: true` in `config.yaml` (see `config.example.yaml`),
+`eob_scheduler.py` also polls the thermostat's status every
+`stats.poll_interval_seconds` over its existing MQTT connection and
+records measured temperature, target, relay on/off and the current
+tariff into `stats.db_file` (SQLite). It serves a page at
+`http://<host>:<stats.web.port>/` (default port 8080) with:
+
+- current measured/target temperature, relay state and for how long,
+  current tariff and the next tariff change
+- a 6 h / 24 h / 7 d temperature chart with heater-on periods and
+  low-tariff windows shaded
+- heater on-time per day, split into low / high tariff -- a quick check
+  that heating really only happens in NT
+
+JSON is available at `/api/status`, `/api/history?hours=24` and
+`/api/daily?days=14`. Relay switches are also logged
+(`Heater relay switched ON/OFF ...`). The page has no authentication --
+keep it on your LAN, or set `stats.web.host: "127.0.0.1"`.
+`--dry-run` uses a simulated thermostat so you can preview the page.
+
+## Reading ambient/current temperature (solved 2026-10-16)
+
+The measured temperature *is* in the status reply: the 80 02 frame's
+first byte is whole degrees and the low nibble of its third byte is
+tenths (e.g. `0e .. 07` = 14.7C). It was missed before because every
+search assumed the half-degree encoding the target uses. The layout comes
+from the official app (ThermSettingsDataLoader) and is documented in
+`eob_lib.py`; `parse_status()` now returns `measured_temp_c` and
+`relay_on` alongside `target_temp_c`. The original notes are kept below
+for history.
+
+### Original notes (before 2026-10-16)
 
 An earlier version of this project tried to log the thermostat's actual
 ambient temperature alongside the target. After extensive testing across

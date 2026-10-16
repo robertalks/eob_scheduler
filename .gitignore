@@ -2,3 +2,6 @@ config.yaml
 *.log
 __pycache__/
 *.pyc
+*.db
+*.db-wal
+*.db-shm
