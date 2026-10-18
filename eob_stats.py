@@ -173,11 +173,11 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>EOB water heater</title>
 <style>
 :root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1b;--mute:#6f6d68;--line:#e3e1dc;
---temp:#c2410c;--target:#6f6d68;--on:rgba(194,65,12,.16);--nt:rgba(37,99,235,.09);
---low:#2563eb;--high:#c2410c;--unk:#a8a29e}
+--temp:#c2410c;--target:#6f6d68;--on:rgba(194,65,12,.16);--nt:rgba(21,128,61,.08);
+--low:#15803d;--high:#b91c1c;--unk:#a8a29e;--good:#15803d;--bad:#b91c1c}
 @media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1f1e1c;--ink:#ecebe7;
 --mute:#9b9890;--line:#33312e;--temp:#fb923c;--target:#9b9890;--on:rgba(251,146,60,.18);
---nt:rgba(96,165,250,.12);--low:#60a5fa;--high:#fb923c;--unk:#6f6d68}}
+--nt:rgba(74,222,128,.10);--low:#4ade80;--high:#f87171;--unk:#6f6d68;--good:#4ade80;--bad:#f87171}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
 font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 main{max-width:960px;margin:0 auto;padding:20px 16px 40px}
@@ -187,7 +187,7 @@ h1{font-size:18px;margin:0 0 14px;font-weight:600}
 .lab{color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
 .val{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
 .sub{color:var(--mute);font-size:13px}
-.on{color:var(--temp)}
+.good{color:var(--good)}.bad{color:var(--bad)}
 .card{margin-top:14px}.row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 .seg button{border:1px solid var(--line);background:none;color:var(--ink);padding:4px 10px;border-radius:6px;cursor:pointer;font:inherit;font-size:13px}
 .seg button.act{background:var(--ink);color:var(--bg)}
@@ -198,10 +198,10 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
 </style></head><body><main>
 <h1>Water heater · BT725</h1>
 <div class="tiles">
- <div class="tile"><div class="lab">Measured</div><div class="val" id="m">–</div><div class="sub" id="age"></div></div>
- <div class="tile"><div class="lab">Target</div><div class="val" id="d">–</div><div class="sub" id="mode"></div></div>
- <div class="tile"><div class="lab">Heater</div><div class="val" id="r">–</div><div class="sub" id="since"></div></div>
- <div class="tile"><div class="lab">Tariff</div><div class="val" id="t">–</div><div class="sub" id="next"></div></div>
+ <div class="tile"><div class="lab">Current temperature</div><div class="val" id="m">–</div><div class="sub" id="age"></div></div>
+ <div class="tile"><div class="lab">Target temperature</div><div class="val" id="d">–</div><div class="sub" id="mode"></div></div>
+ <div class="tile"><div class="lab">Heater status</div><div class="val" id="r">–</div><div class="sub" id="since"></div></div>
+ <div class="tile"><div class="lab">Electricity tariff</div><div class="val" id="t">–</div><div class="sub" id="next"></div></div>
 </div>
 <div class="card"><div class="row"><b>Temperature</b>
  <div class="seg" id="rng"><button data-h="6">6 h</button><button data-h="24" class="act">24 h</button><button data-h="168">7 d</button></div></div>
@@ -210,8 +210,8 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
  <span><i class="sw" style="background:var(--target)"></i>target (hidden while forced off)</span>
  <span><i class="sw" style="background:var(--on)"></i>heater on</span>
  <span><i class="sw" style="background:var(--nt)"></i>low tariff</span></div></div>
-<div class="card"><div class="row"><b>Heater on-time per day</b><span class="sub" id="tot"></span></div>
- <svg id="bars" height="200" role="img" aria-label="Daily heater on-time"></svg>
+<div class="card"><div class="row"><b>Heater runtime per day</b><span class="sub" id="tot"></span></div>
+ <svg id="bars" height="200" role="img" aria-label="Heater runtime per day"></svg>
  <div class="legend"><span><i class="sw" style="background:var(--low)"></i>low tariff</span>
  <span><i class="sw" style="background:var(--high)"></i>high tariff</span>
  <span><i class="sw" style="background:var(--unk)"></i>tariff unknown</span></div></div>
@@ -223,13 +223,13 @@ const nice=r=>{const m=10**Math.floor(Math.log10(r)),f=r/m;return (f<=1?1:f<=2?2
 const dur=s=>{s=Math.max(0,s|0);const h=s/3600|0,m=(s%3600)/60|0;return h?`${h} h ${m} min`:`${m} min`};
 function el(t,a,p){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);p&&p.appendChild(e);return e}
 async function status(){const s=await (await fetch("api/status")).json();
- $("t").textContent=s.low_tariff==null?"–":(s.low_tariff?"low":"high");
+ $("t").textContent=s.low_tariff==null?"–":(s.low_tariff?"LOW":"HIGH");$("t").className="val"+(s.low_tariff==null?"":s.low_tariff?" good":" bad");
  $("next").textContent=s.next_tariff_change?(s.next_tariff_change.to_low?"low":"high")+" from "+fmtT(s.next_tariff_change.ts):"";
  if(!s.ok){$("age").textContent="no data yet";return}
- $("m").textContent=s.measured.toFixed(1)+" °C";$("d").textContent=s.desired?s.desired.toFixed(1)+" °C":"off";
+ $("m").textContent=s.measured.toFixed(1)+" °C";$("d").textContent=s.desired?s.desired.toFixed(1)+" °C":"OFF";$("d").className="val"+(s.desired?"":" bad");
  $("mode").textContent=s.mode==="off"?"forced off":"";$("age").textContent="updated "+dur(s.age)+" ago";
  $("age").className="sub"+(s.age>300?" stale":"");
- $("r").textContent=s.relay?"ON":"off";$("r").className="val"+(s.relay?" on":"");
+ $("r").textContent=s.relay?"ON":"OFF";$("r").className="val "+(s.relay?"good":"bad");
  $("since").textContent=s.since?"for "+dur(Date.now()/1000-s.since):"";
 }
 async function chart(){const d=await (await fetch("api/history?hours="+H)).json(),svg=$("ch");svg.innerHTML="";
@@ -258,9 +258,9 @@ async function bars(){const d=await (await fetch("api/daily?days=14")).json(),sv
  let tl=0,th=0;d.forEach((v,i)=>{let base=0;tl+=v.low;th+=v.high;
   [["low","var(--low)"],["high","var(--high)"],["unknown","var(--unk)"]].forEach(([k,c])=>{if(!v[k])return;
    const r=el("rect",{x:L+i*bw+bw*.18,width:bw*.64,y:y(base+v[k]),height:y(base)-y(base+v[k]),fill:c},svg);
-   el("title",{},r).textContent=`${v.day}: ${k} ${dur(v[k]*60)}`;base+=v[k]});
+   el("title",{},r).textContent=`${v.day}: ${dur(v[k]*60)} in ${k==="unknown"?"unknown":k} tariff`;base+=v[k]});
   if(bw>=34||(n-1-i)%2==0)el("text",{x:L+i*bw+bw/2,y:Ht-6,"text-anchor":"middle"},svg).textContent=+v.day.slice(8)+"."+(+v.day.slice(5,7))+"."});
- $("tot").textContent=`14 days: ${dur((tl+th)*60)} on`+(tl+th?`, ${Math.round(100*tl/((tl+th)||1))}% in low tariff`:"")}
+ $("tot").textContent=`last 14 days: ${dur((tl+th)*60)}`+(tl+th?`, ${Math.round(100*tl/((tl+th)||1))}% in low tariff`:"")}
 $("rng").querySelectorAll("button").forEach(b=>{b.classList.toggle("act",+b.dataset.h===H);b.onclick=()=>{H=+b.dataset.h;
  try{localStorage.setItem("h",H)}catch(e){}$("rng").querySelectorAll("button").forEach(o=>o.classList.toggle("act",o===b));chart()}});
 function all(){status().catch(()=>{});chart().catch(()=>{});bars().catch(()=>{})}
