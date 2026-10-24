@@ -227,7 +227,7 @@ async function status(){const s=await (await fetch("api/status")).json();
  $("next").textContent=s.next_tariff_change?(s.next_tariff_change.to_low?"low":"high")+" from "+fmtT(s.next_tariff_change.ts):"";
  if(!s.ok){$("age").textContent="no data yet";return}
  $("m").textContent=s.measured.toFixed(1)+" °C";$("d").textContent=s.desired?s.desired.toFixed(1)+" °C":"OFF";$("d").className="val"+(s.desired?"":" bad");
- $("mode").textContent=s.mode==="off"?"forced off":"";$("age").textContent="updated "+dur(s.age)+" ago";
+ $("mode").textContent=(!s.desired&&s.control&&s.control.target)?"low tariff: "+s.control.target.toFixed(1)+" °C":(s.mode==="off"?"forced off":(s.control&&s.control.source==="app"?"set from app":""));$("age").textContent="updated "+dur(s.age)+" ago";
  $("age").className="sub"+(s.age>300?" stale":"");
  $("r").textContent=s.relay?"ON":"OFF";$("r").className="val "+(s.relay?"good":"bad");
  $("since").textContent=s.since?"for "+dur(Date.now()/1000-s.since):"";
@@ -269,7 +269,10 @@ let rz;addEventListener("resize",()=>{clearTimeout(rz);rz=setTimeout(()=>{chart(
 </script></body></html>"""
 
 
-def _make_handler(store: StatsStore):
+MAX_BODY = 4096
+
+
+def _make_handler(store: StatsStore, controller=None):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, ctype):
             b = body.encode() if isinstance(body, str) else body
@@ -288,6 +291,8 @@ def _make_handler(store: StatsStore):
                     return self._send(200, PAGE, "text/html; charset=utf-8")
                 if u.path == "/api/status":
                     data = store.status()
+                    if controller is not None:
+                        data["control"] = controller.info()
                 elif u.path == "/api/history":
                     data = store.history(min(float(q.get("hours", ["24"])[0]), 24 * 31))
                 elif u.path == "/api/daily":
@@ -299,20 +304,69 @@ def _make_handler(store: StatsStore):
                 logger.exception("stats web: %s failed", u.path)
                 self._send(500, json.dumps({"error": str(e)}), "application/json")
 
+        # --- control API (EOBApp): change the low-tariff target temperature.
+        #   POST   /api/target  {"target": 18.5}   set it
+        #   DELETE /api/target                     back to the configured behaviour
+        # Needs `control.enabled` + `control.token` in config.yaml, and the token
+        # in "Authorization: Bearer <token>" -- Cloudflare Access alone isn't
+        # enough, because port 8080 is also reachable from the LAN.
+        def do_POST(self):
+            self._control("POST")
+
+        def do_DELETE(self):
+            self._control("DELETE")
+
+        def _control(self, method):
+            u = urlparse(self.path)
+            if u.path != "/api/target":
+                return self._send(404, json.dumps({"error": "not found"}), "application/json")
+            if controller is None or not controller.enabled:
+                return self._send(403, json.dumps({"error": "Remote control is disabled in config.yaml."}),
+                                  "application/json")
+            auth = self.headers.get("Authorization", "")
+            token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
+            if not controller.check_token(token):
+                logger.warning("control: rejected request with a missing/wrong token from %s",
+                               self.headers.get("Cf-Connecting-Ip") or self.client_address[0])
+                return self._send(401, json.dumps({"error": "Wrong or missing control token."}),
+                                  "application/json")
+            try:
+                if method == "DELETE":
+                    result = controller.clear_target()
+                else:
+                    length = int(self.headers.get("Content-Length") or 0)
+                    if length <= 0 or length > MAX_BODY:
+                        raise ValueError("body")
+                    body = json.loads(self.rfile.read(length))
+                    if not isinstance(body, dict) or "target" not in body:
+                        raise ValueError("body")
+                    result = controller.set_target(body["target"])
+                self._send(200, json.dumps(result), "application/json")
+            except ValueError:
+                self._send(400, json.dumps({"error": 'Expected JSON like {"target": 18.5}.'}),
+                           "application/json")
+            except Exception as e:
+                status = getattr(e, "status", None)
+                if status is None:
+                    logger.exception("control: %s failed", method)
+                    status = 500
+                self._send(status, json.dumps({"error": str(e)}), "application/json")
+
         def log_message(self, *args):
             pass
     return Handler
 
 
-def start_web(store: StatsStore, host: str = "0.0.0.0", port: int = 8080):
-    srv = ThreadingHTTPServer((host, port), _make_handler(store))
+def start_web(store: StatsStore, host: str = "0.0.0.0", port: int = 8080, controller=None):
+    srv = ThreadingHTTPServer((host, port), _make_handler(store, controller))
     threading.Thread(target=srv.serve_forever, name="eob-stats-web", daemon=True).start()
     logger.info("Stats dashboard on http://%s:%s/", host, port)
     return srv
 
 
-def start_from_config(config: dict, client, schedule):
-    """Called by eob_scheduler.py. Returns (collector, server) or None."""
+def start_from_config(config: dict, client, schedule, controller=None):
+    """Called by eob_scheduler.py. Returns (collector, server) or None.
+    `controller` (eob_scheduler.Controller) enables the /api/target control API."""
     cfg = config.get("stats") or {}
     if not cfg.get("enabled", False):
         return None
@@ -320,8 +374,12 @@ def start_from_config(config: dict, client, schedule):
     store = StatsStore(cfg.get("db_file", "eob_stats.db"), schedule, interval)
     collector = StatsCollector(client, store, interval)
     collector.start()
+    if controller is not None:
+        # After a target change, read the status back a moment later so the
+        # dashboard and app show the new target without waiting a full minute.
+        controller.on_change = lambda: threading.Timer(3.0, collector.poll_once).start()
     web = cfg.get("web") or {}
     srv = None
     if web.get("enabled", True):
-        srv = start_web(store, web.get("host", "0.0.0.0"), int(web.get("port", 8080)))
+        srv = start_web(store, web.get("host", "0.0.0.0"), int(web.get("port", 8080)), controller)
     return collector, srv

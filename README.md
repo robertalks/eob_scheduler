@@ -155,6 +155,36 @@ JSON is available at `/api/status`, `/api/history?hours=24` and
 keep it on your LAN, or set `stats.web.host: "127.0.0.1"`.
 `--dry-run` uses a simulated thermostat so you can preview the page.
 
+## Changing the target temperature remotely (EOBApp)
+
+With a `control:` section in `config.yaml` (see `config.example.yaml`), the
+stats web server also accepts:
+
+- `POST /api/target` with `{"target": 18.5}` -- set the low-tariff target
+- `DELETE /api/target` -- back to the configured behaviour
+
+Both need `Authorization: Bearer <control.token>`. The token is required on
+top of Cloudflare Access because the port is also reachable on the LAN; with
+no token configured, control stays disabled.
+
+How it fits the tariff logic:
+
+- A target set from the app is used for **every** low-tariff period (it wins
+  over `temperature_source`) and is saved to `state_file`, so it survives a
+  restart -- including one during high tariff, when the device itself reports
+  0.0C.
+- During low tariff it's sent to the thermostat immediately. During high
+  tariff the heater stays forced off; the new target applies at the next low
+  tariff.
+- With `temperature_source: "device"`, a later change made in the Elektrobock
+  app while the heater is on still counts: it's picked up at the next
+  switch-off and replaces the app-set value (the most recent change wins).
+- Values are rounded to 0.5C and limited to 5.0-39.0C (eob_lib's safe range;
+  `control.min_temperature`/`max_temperature` can narrow it).
+
+`/api/status` includes a `control` object (enabled, range, step, the current
+low-tariff target and where it comes from) so the app knows what to offer.
+
 ## Reading ambient/current temperature (solved 2026-10-16)
 
 The measured temperature *is* in the status reply: the 80 02 frame's

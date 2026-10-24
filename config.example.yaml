@@ -103,3 +103,24 @@ stats:
     enabled: true
     host: "0.0.0.0"            # "127.0.0.1" to keep it local-only
     port: 8080
+
+# Where the scheduler keeps state that must survive a restart (currently the
+# target temperature set from EOBApp).
+state_file: "eob_state.json"
+
+# Remote control of the low-tariff target temperature from EOBApp
+# (POST/DELETE /api/target on the stats web server, so stats.web must be on).
+# The token is required on top of Cloudflare Access because port 8080 is also
+# reachable from your LAN. Generate one with:
+#   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+# and enter the same value as "Control token" in EOBApp's settings.
+# A target set from the app is used for every low-tariff period (it wins over
+# temperature_source) until reset from the app; during high tariff the heater
+# stays forced off and the new target applies at the next low tariff.
+control:
+  enabled: false
+  token: ""
+  # Optional: narrow the allowed range (can't go beyond 5.0-39.0, eob_lib's
+  # TEMP_MIN_C/TEMP_MAX_C).
+  # min_temperature: 10.0
+  # max_temperature: 25.0
