@@ -84,6 +84,14 @@ thermostat:
   mqtt_password: ""          # the MQTT password captured from your app's
                              # MQTT CONNECT packet (see CAPTURE_GUIDE.md).
                              # Keep this file out of version control.
+  # How long to wait for a status reply, and how many times to re-publish the
+  # request if nothing comes back. Status requests go out at QoS 0, so one that
+  # lands during a brief device/broker blip is simply lost -- a re-publish
+  # (which the device answers once it's reconnected) recovers far more of those
+  # than a longer single wait. Worst case per poll is roughly
+  # request_timeout_seconds + request_retries * 5 s.
+  request_timeout_seconds: 15
+  request_retries: 1
 
 # How often the scheduler checks the clock, in seconds.
 poll_interval_seconds: 60
@@ -99,6 +107,9 @@ stats:
   enabled: true
   db_file: "eob_stats.db"      # SQLite history, ~1 row per poll
   poll_interval_seconds: 60
+  # A single missed poll is routine and logged at DEBUG; only warn once the
+  # thermostat has been silent for this many polls in a row.
+  warn_after_misses: 3
   web:
     enabled: true
     host: "0.0.0.0"            # "127.0.0.1" to keep it local-only

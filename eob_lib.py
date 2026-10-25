@@ -217,12 +217,22 @@ def parse_status(payload: bytes) -> dict:
 class Bt725Client:
     """Direct MQTT client for one BT725 thermostat."""
 
-    def __init__(self, unique_id: str, mqtt_password: str, client_id: str | None = None):
+    # On a miss, re-publish and wait this much longer before giving up. Status
+    # requests go out at QoS 0 with no retain, so a request sent during a brief
+    # device/broker disconnect is simply dropped and no reply ever comes -- a
+    # longer single wait can't recover that, but a re-publish usually can,
+    # because the device has reconnected by then.
+    RETRY_WAIT = 5.0
+
+    def __init__(self, unique_id: str, mqtt_password: str, client_id: str | None = None,
+                 request_timeout: float = 15.0, request_retries: int = 1):
         self.unique_id = str(unique_id).zfill(6)
         self.username = f"{TOPIC_BASE}_{self.unique_id}"
         self.password = mqtt_password
         self.pub_topic = f"{TOPIC_BASE}/I/{self.unique_id}"
         self.sub_topic = f"{TOPIC_BASE}/O/{self.unique_id}"
+        self.request_timeout = float(request_timeout)
+        self.request_retries = max(0, int(request_retries))
 
         self._client = mqtt.Client(
             client_id=client_id or "",
@@ -304,15 +314,26 @@ class Bt725Client:
         )
         self._client.publish(self.pub_topic, payload, qos=0, retain=False)
 
-    def request_status(self, timeout: float = 10.0) -> dict:
-        """Ask the device for a status push and wait (briefly) for it.
-        Returns the parsed dict (see parse_status), or {} on timeout."""
+    def request_status(self, timeout: float | None = None,
+                       retries: int | None = None) -> dict:
+        """Ask the device for a status push and wait for it, re-publishing a
+        few times if nothing comes back (QoS 0, so a request can be lost).
+        Returns the parsed dict (see parse_status), or {} if every attempt
+        timed out. Logs the final miss at DEBUG -- the stats collector decides
+        when a run of misses is worth a WARNING."""
+        timeout = self.request_timeout if timeout is None else float(timeout)
+        retries = self.request_retries if retries is None else max(0, int(retries))
         with self._request_lock:
-            self._status_event.clear()
-            self._client.publish(self.pub_topic, _STATUS_REQUEST_PAYLOAD, qos=0, retain=False)
-            if self._status_event.wait(timeout):
-                return dict(self.last_status)
-        logger.warning("No status response within %.1fs", timeout)
+            for attempt in range(retries + 1):
+                wait = timeout if attempt == 0 else min(timeout, self.RETRY_WAIT)
+                self._status_event.clear()
+                self._client.publish(self.pub_topic, _STATUS_REQUEST_PAYLOAD, qos=0, retain=False)
+                if self._status_event.wait(wait):
+                    return dict(self.last_status)
+                if attempt < retries:
+                    logger.debug("No status in %.1fs, re-publishing (attempt %d/%d)",
+                                 wait, attempt + 2, retries + 1)
+        logger.debug("No status response after %d attempt(s)", retries + 1)
         return {}
 
 
@@ -385,8 +406,11 @@ class Bt725LiveThermostat(ThermostatClient):
     """Adapts Bt725Client to the ThermostatClient interface, connecting
     once and reusing the MQTT session for the life of the scheduler."""
 
-    def __init__(self, unique_id: str, mqtt_password: str):
-        self._client = Bt725Client(unique_id, mqtt_password)
+    def __init__(self, unique_id: str, mqtt_password: str,
+                 request_timeout: float = 15.0, request_retries: int = 1):
+        self._client = Bt725Client(unique_id, mqtt_password,
+                                    request_timeout=request_timeout,
+                                    request_retries=request_retries)
         self._client.connect()
         self._state = None
 
@@ -418,5 +442,7 @@ def build_client(config: dict) -> ThermostatClient:
         return Bt725LiveThermostat(
             unique_id=t_cfg["unique_id"],
             mqtt_password=t_cfg["mqtt_password"],
+            request_timeout=float(t_cfg.get("request_timeout_seconds", 15.0)),
+            request_retries=int(t_cfg.get("request_retries", 1)),
         )
     raise ValueError(f"Unknown thermostat mode: {mode!r}")

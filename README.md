@@ -159,6 +159,19 @@ cycles: `start`/`end`, `seconds`, `start_temp`/`end_temp`, `target`,
 keep it on your LAN, or set `stats.web.host: "127.0.0.1"`.
 `--dry-run` uses a simulated thermostat so you can preview the page.
 
+### Status requests and missed readings
+
+Status requests go to the device at QoS 0 with no retain, so one sent during
+a brief disconnect from the cloud broker is simply lost and never answered --
+a longer wait can't recover it, but re-publishing (which the device answers
+once it has reconnected) usually can. So each poll waits
+`thermostat.request_timeout_seconds` (default 15) and re-publishes up to
+`thermostat.request_retries` times (default 1). A single missed poll is
+routine and logged at DEBUG; the scheduler only WARNs once the thermostat has
+been silent for `stats.warn_after_misses` polls in a row (default 3), and logs
+an INFO when it starts responding again. A missed poll just means no reading
+for that minute -- the charts, runtime and cycles all tolerate the gap.
+
 ## Changing the target temperature remotely (EOBApp)
 
 With a `control:` section in `config.yaml` (see `config.example.yaml`), the

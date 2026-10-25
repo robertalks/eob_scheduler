@@ -104,11 +104,16 @@ class StatsStore:
                            "WHERE ts>=? ORDER BY ts", (since,))
         return {"since": since, "interval": self.interval, "rows": [list(r) for r in rows]}
 
-    def daily(self, days: int) -> list:
+    def daily(self, days: int, now: datetime | None = None) -> list:
         """Heater-on minutes per local day, split by tariff. Each reading
         counts until the next one, capped at 3 poll intervals so gaps
-        (scheduler down, broker unreachable) don't count as heating."""
-        today = datetime.now(self.tz).replace(hour=0, minute=0, second=0, microsecond=0)
+        (scheduler down, broker unreachable) don't count as heating.
+
+        Day boundaries use each local midnight's real epoch (via .timestamp()),
+        so a day that is 23 or 25 hours long on a DST changeover is still split
+        correctly. `now` (tz-aware) overrides the clock, for testing."""
+        base = now or datetime.now(self.tz)
+        today = base.astimezone(self.tz).replace(hour=0, minute=0, second=0, microsecond=0)
         start = today - timedelta(days=days - 1)
         rows = self._query("SELECT ts,relay,low_tariff FROM readings WHERE ts>=? "
                            "ORDER BY ts", (int(start.timestamp()) - 3 * self.interval,))
@@ -201,8 +206,14 @@ class StatsStore:
 class StatsCollector:
     """Background thread polling client.get_status() into a StatsStore."""
 
-    def __init__(self, client, store: StatsStore, interval: int = 60):
+    def __init__(self, client, store: StatsStore, interval: int = 60,
+                 warn_after_misses: int = 3):
         self.client, self.store, self.interval = client, store, interval
+        # A single missed reading is routine (QoS 0, brief device blips); only
+        # a run of them means the thermostat is actually unreachable. Warn once
+        # when the streak reaches this, stay quiet otherwise.
+        self.warn_after_misses = max(1, warn_after_misses)
+        self._misses = 0
         self._stop = threading.Event()
 
     def poll_once(self) -> None:
@@ -214,8 +225,17 @@ class StatsCollector:
             logger.exception("stats: status request failed")
             return
         if "measured_temp_c" not in status or "relay_on" not in status:
-            logger.warning("stats: no usable status this round (%s)", status or "timeout")
+            self._misses += 1
+            if self._misses == self.warn_after_misses:
+                logger.warning("stats: no response from the thermostat for %d polls "
+                               "-- is it online?", self._misses)
+            else:
+                logger.debug("stats: no status this round (%d in a row)", self._misses)
             return
+        if self._misses >= self.warn_after_misses:
+            logger.info("stats: thermostat responding again (after %d missed polls)",
+                        self._misses)
+        self._misses = 0
         if self.store.add(status):
             logger.info("Heater relay switched %s (measured %.1fC, target %.1fC)",
                         "ON" if status["relay_on"] else "OFF",
@@ -472,7 +492,8 @@ def start_from_config(config: dict, client, schedule, controller=None):
         return None
     interval = int(cfg.get("poll_interval_seconds", 60))
     store = StatsStore(cfg.get("db_file", "eob_stats.db"), schedule, interval)
-    collector = StatsCollector(client, store, interval)
+    collector = StatsCollector(client, store, interval,
+                               warn_after_misses=int(cfg.get("warn_after_misses", 3)))
     collector.start()
     if controller is not None:
         # After a target change, read the status back a moment later so the
