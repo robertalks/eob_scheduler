@@ -148,9 +148,13 @@ tariff into `stats.db_file` (SQLite). It serves a page at
   low-tariff windows shaded
 - heater on-time per day, split into low / high tariff -- a quick check
   that heating really only happens in NT
+- a "Recent heating" table: each heating cycle with its start/end time,
+  duration, the temperature it started at, and the tariff
 
-JSON is available at `/api/status`, `/api/history?hours=24` and
-`/api/daily?days=14`. Relay switches are also logged
+JSON is available at `/api/status`, `/api/history?hours=24`,
+`/api/daily?days=14` and `/api/cycles?hours=48` (individual heating
+cycles: `start`/`end`, `seconds`, `start_temp`/`end_temp`, `target`,
+`low_tariff`, `ongoing`, `gap`). Relay switches are also logged
 (`Heater relay switched ON/OFF ...`). The page has no authentication --
 keep it on your LAN, or set `stats.web.host: "127.0.0.1"`.
 `--dry-run` uses a simulated thermostat so you can preview the page.

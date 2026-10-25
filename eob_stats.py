@@ -10,6 +10,7 @@ The dashboard is served on http://<host>:<port>/ with JSON under /api/:
   /api/status            latest reading, tariff now + next change
   /api/history?hours=24  readings for the chart
   /api/daily?days=14     heater-on minutes per day, split low/high tariff
+  /api/cycles?hours=48   individual heating cycles: start/end, duration, temps
 
 Config (config.yaml):
   stats:
@@ -132,6 +133,70 @@ class StatsStore:
         return [{k: (round(v) if isinstance(v, float) else v) for k, v in d.items()}
                 for d in out.values()]
 
+    def cycles(self, hours: float, limit: int = 100) -> dict:
+        """Reconstruct individual heating cycles (one relay ON->OFF run) from
+        the readings, newest first. Each cycle:
+          start / end   unix seconds (end is null while still heating)
+          seconds       duration (to now while ongoing)
+          start_temp    measured temperature when the relay switched on
+          end_temp      measured temperature when it switched off (null if n/a)
+          target        target temperature at the start of the cycle
+          low_tariff    True/False/None at the start
+          ongoing       still heating now
+          gap           readings were lost mid-cycle (scheduler/broker down), so
+                        the end time is "at least" -- the real one is unknown
+
+        A run is ended by a relay=0 reading, by a gap in the readings longer
+        than 3 poll intervals (we can't claim it kept heating through a
+        blackout), or by the end of the data (ongoing if the last reading is
+        recent, otherwise gap-truncated). To get the true start of a cycle that
+        was already running when the window opened, readings are read from a
+        little before `since`; only cycles that end (or are ongoing) within the
+        window are returned."""
+        now = int(time.time())
+        since = int(now - hours * 3600)
+        cap = 3 * self.interval
+        lookback = max(6 * 3600, cap)
+        rows = self._query(
+            "SELECT ts,measured,target,relay,low_tariff FROM readings "
+            "WHERE ts>=? ORDER BY ts", (since - lookback,))
+
+        cycles: list[dict] = []
+        cur: dict | None = None
+        prev_ts: int | None = None
+
+        def close(end_ts, end_temp, ongoing, gap):
+            cur["end"] = None if ongoing else int(end_ts)
+            cur["seconds"] = (now if ongoing else int(end_ts)) - cur["start"]
+            cur["end_temp"] = None if ongoing else end_temp
+            cur["ongoing"] = ongoing
+            cur["gap"] = gap
+            cycles.append(cur)
+
+        for ts, measured, target, relay, low in rows:
+            if cur is not None and prev_ts is not None and ts - prev_ts > cap:
+                # Lost the thread mid-cycle: close at the last thing we saw.
+                close(prev_ts, None, ongoing=False, gap=True)
+                cur = None
+            if relay:
+                if cur is None:
+                    cur = {"start": int(ts), "start_temp": measured, "target": target,
+                           "low_tariff": (None if low is None else bool(low))}
+            elif cur is not None:
+                close(ts, measured, ongoing=False, gap=False)
+                cur = None
+            prev_ts = ts
+
+        if cur is not None:
+            if prev_ts is not None and now - prev_ts <= cap:
+                close(None, None, ongoing=True, gap=False)
+            else:
+                close(prev_ts, None, ongoing=False, gap=True)
+
+        result = [c for c in cycles if c["ongoing"] or c["end"] >= since]
+        result.sort(key=lambda c: c["start"], reverse=True)
+        return {"since": since, "cycles": result[:max(1, limit)]}
+
 
 class StatsCollector:
     """Background thread polling client.get_status() into a StatsStore."""
@@ -188,6 +253,12 @@ h1{font-size:18px;margin:0 0 14px;font-weight:600}
 .val{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
 .sub{color:var(--mute);font-size:13px}
 .good{color:var(--good)}.bad{color:var(--bad)}
+table.cy{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+table.cy th{color:var(--mute);font-weight:500;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:3px 10px 5px 0;white-space:nowrap}
+table.cy td{padding:6px 10px 6px 0;border-top:1px solid var(--line);white-space:nowrap}
+table.cy td.num{text-align:right}
+.pill{font-size:11px;padding:1px 7px;border-radius:999px;color:#fff}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--temp);margin-right:5px;vertical-align:1px}
 .card{margin-top:14px}.row{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 .seg button{border:1px solid var(--line);background:none;color:var(--ink);padding:4px 10px;border-radius:6px;cursor:pointer;font:inherit;font-size:13px}
 .seg button.act{background:var(--ink);color:var(--bg)}
@@ -215,9 +286,17 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
  <div class="legend"><span><i class="sw" style="background:var(--low)"></i>low tariff</span>
  <span><i class="sw" style="background:var(--high)"></i>high tariff</span>
  <span><i class="sw" style="background:var(--unk)"></i>tariff unknown</span></div></div>
+<div class="card"><div class="row"><b>Recent heating</b>
+ <div class="seg" id="cyrng"><button data-h="24">24 h</button><button data-h="48" class="act">48 h</button><button data-h="168">7 d</button></div></div>
+ <div id="cywrap"></div></div>
 </main><script>
 const $=id=>document.getElementById(id),NS="http://www.w3.org/2000/svg";
 let H=24;try{H=+localStorage.getItem("h")||24}catch(e){}
+let CH=48;try{CH=+localStorage.getItem("ch")||48}catch(e){}
+const dayLabel=s=>{const d=new Date(s*1000),n=new Date();
+ if(d.toDateString()===n.toDateString())return "Today";
+ if(d.toDateString()===new Date(n-864e5).toDateString())return "Yesterday";
+ return d.toLocaleDateString([],{day:"numeric",month:"short"})};
 const fmtT=s=>new Date(s*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",hourCycle:"h23"});
 const nice=r=>{const m=10**Math.floor(Math.log10(r)),f=r/m;return (f<=1?1:f<=2?2:f<=5?5:10)*m};
 const dur=s=>{s=Math.max(0,s|0);const h=s/3600|0,m=(s%3600)/60|0;return h?`${h} h ${m} min`:`${m} min`};
@@ -263,7 +342,24 @@ async function bars(){const d=await (await fetch("api/daily?days=14")).json(),sv
  $("tot").textContent=`last 14 days: ${dur((tl+th)*60)}`+(tl+th?`, ${Math.round(100*tl/((tl+th)||1))}% in low tariff`:"")}
 $("rng").querySelectorAll("button").forEach(b=>{b.classList.toggle("act",+b.dataset.h===H);b.onclick=()=>{H=+b.dataset.h;
  try{localStorage.setItem("h",H)}catch(e){}$("rng").querySelectorAll("button").forEach(o=>o.classList.toggle("act",o===b));chart()}});
-function all(){status().catch(()=>{});chart().catch(()=>{});bars().catch(()=>{})}
+async function cycles(){const d=await (await fetch("api/cycles?hours="+CH+"&limit=100")).json();
+ const cs=d.cycles||[],w=$("cywrap");
+ if(!cs.length){w.innerHTML='<div class="sub">No heating in this period.</div>';return}
+ let total=0,rows="";
+ for(const c of cs){total+=c.seconds;
+  const t=c.low_tariff,pill=t===null?'<span class="pill" style="background:var(--unk)">—</span>':
+   (t?'<span class="pill" style="background:var(--low)">LOW</span>':'<span class="pill" style="background:var(--high)">HIGH</span>');
+  const end=c.ongoing?'<span class="dot"></span>now':fmtT(c.end);
+  const durtxt=(c.gap?"≥ ":"")+dur(c.seconds);
+  const st=c.start_temp==null?"–":c.start_temp.toFixed(1)+" °C";
+  rows+=`<tr><td>${dayLabel(c.start)}</td><td>${fmtT(c.start)} – ${end}</td>`+
+        `<td class="num">${durtxt}</td><td class="num">${st}</td><td>${pill}</td></tr>`;}
+ w.innerHTML=`<table class="cy"><thead><tr><th>Day</th><th>Time</th><th class="num">Duration</th>`+
+  `<th class="num">Start temp</th><th>Tariff</th></tr></thead><tbody>${rows}</tbody></table>`+
+  `<div class="sub" style="margin-top:8px">${cs.length} cycle${cs.length>1?"s":""} · ${dur(total)} total</div>`;}
+$("cyrng").querySelectorAll("button").forEach(b=>{b.classList.toggle("act",+b.dataset.h===CH);b.onclick=()=>{CH=+b.dataset.h;
+ try{localStorage.setItem("ch",CH)}catch(e){}$("cyrng").querySelectorAll("button").forEach(o=>o.classList.toggle("act",o===b));cycles()}});
+function all(){status().catch(()=>{});chart().catch(()=>{});bars().catch(()=>{});cycles().catch(()=>{})}
 all();setInterval(all,60000);
 let rz;addEventListener("resize",()=>{clearTimeout(rz);rz=setTimeout(()=>{chart();bars()},200)});
 </script></body></html>"""
@@ -297,6 +393,10 @@ def _make_handler(store: StatsStore, controller=None):
                     data = store.history(min(float(q.get("hours", ["24"])[0]), 24 * 31))
                 elif u.path == "/api/daily":
                     data = store.daily(max(1, min(int(q.get("days", ["14"])[0]), 366)))
+                elif u.path == "/api/cycles":
+                    data = store.cycles(
+                        min(float(q.get("hours", ["48"])[0]), 24 * 31),
+                        min(int(q.get("limit", ["100"])[0]), 500))
                 else:
                     return self._send(404, "not found", "text/plain")
                 self._send(200, json.dumps(data), "application/json")
