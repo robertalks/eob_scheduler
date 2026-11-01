@@ -74,9 +74,20 @@ config.yaml    -- your D45d switching times, target temperature, and
    revises these nationwide (it happened in Oct 2025 and Mar 2026), so check
    back after any such announcement.
 3. Copy `config.example.yaml` to `config.yaml` and fill in your VT (high
-   tariff) windows, `target_temperature`, your thermostat's `unique_id`,
-   and its `mqtt_password` (the latter two captured from your app's MQTT
-   CONNECT packet — see `CAPTURE_GUIDE.md` if you ever need to redo this).
+   tariff) windows, `target_temperature`, your thermostat's `unique_id`
+   and its `mqtt_password`. The easy way to get the latter two:
+
+   ```
+   python eob_client.py --login
+   ```
+
+   This logs in to your Elektrobock account (the same email/password you
+   use in the official app) and prints each device's `unique_id` and
+   `mqtt_password` to paste in — no packet capture needed. Your account
+   password is only used in memory to fetch a token and is never stored.
+   (If you'd rather capture it from the app's traffic instead, see
+   `CAPTURE_GUIDE.md`.)
+
    Your actual D45d windows (weekday + weekend/holiday) are already filled
    in as of 2026-09-13 — double check they still match if you're setting
    this up much later.

@@ -78,11 +78,11 @@ target_temperature: 15.0
 # CAPTURE_GUIDE.md and eob_lib.py for details.
 thermostat:
   mode: "live"               # "live" for the real device, "mock" to test
-  unique_id: "XXXXXX"        # your thermostat's ID -- from the MQTT topic
-                             # your app used (PTWIFI/I/<this>), or captured
-                             # directly from its MQTT CONNECT packet
-  mqtt_password: ""          # the MQTT password captured from your app's
-                             # MQTT CONNECT packet (see CAPTURE_GUIDE.md).
+  # Get unique_id and mqtt_password with:  python eob_client.py --login
+  # (logs in to your Elektrobock account and prints them). Or capture them
+  # from the app's MQTT CONNECT packet -- see CAPTURE_GUIDE.md.
+  unique_id: "XXXXXX"        # your thermostat's ID (PTWIFI/I/<this>)
+  mqtt_password: ""          # the device's MQTT password.
                              # Keep this file out of version control.
   # How long to wait for a status reply, and how many times to re-publish the
   # request if nothing comes back. Status requests go out at QoS 0, so one that

@@ -13,9 +13,17 @@ Usage:
         Diagnostic tool: dumps the raw status payload and lists every
         byte that could plausibly be a half-degree temperature, flagging
         any close to a known real temperature you supply.
+
+    python eob_client.py --login [account_email]
+        Logs in to your Elektrobock account (data.elektrobock.cz) and
+        prints each device's MQTT id and password, so you can paste them
+        into config.yaml without capturing the app's traffic. Prompts for
+        the email (if not given) and the password; the password is read
+        without echo and never stored.
 """
 from __future__ import annotations
 
+import getpass
 import logging
 import sys
 import time
@@ -68,15 +76,55 @@ def run_test(unique_id: str, mqtt_password: str, target_temp: float) -> None:
     print("Done.")
 
 
+def run_login(email: str | None) -> None:
+    # Imported here so --test/--status don't depend on this module at all.
+    import elbock_cloud
+
+    if not email:
+        email = input("Elektrobock account email: ").strip()
+    password = getpass.getpass("Password (not shown, not stored): ")
+    if not email or not password:
+        print("Email and password are required.")
+        sys.exit(1)
+
+    try:
+        devices = elbock_cloud.fetch_credentials(email, password)
+    except elbock_cloud.CloudError as e:
+        print(f"Failed: {e}")
+        sys.exit(1)
+
+    if not devices:
+        print("Logged in, but the account has no devices.")
+        return
+
+    print(f"\nFound {len(devices)} device(s):\n")
+    for d in devices:
+        label = f" ({d.name})" if d.name else ""
+        print(f"  device{label}:")
+        print(f"    unique_id:     {d.unique_id}")
+        print(f"    mqtt_password: {d.mqtt_password}")
+        print()
+    print("Paste the unique_id and mqtt_password into your config.yaml under "
+          "`thermostat:`.")
+
+
 def _usage() -> None:
     print(
         "Usage: python eob_client.py --test <unique_id> <mqtt_password> <target_temp_C>\n"
-        "   or: python eob_client.py --status <unique_id> <mqtt_password> [known_actual_temp_C]"
+        "   or: python eob_client.py --status <unique_id> <mqtt_password> [known_actual_temp_C]\n"
+        "   or: python eob_client.py --login [account_email]"
     )
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+
+    if len(sys.argv) >= 2 and sys.argv[1] == "--login":
+        if len(sys.argv) > 3:
+            _usage()
+            sys.exit(1)
+        run_login(sys.argv[2] if len(sys.argv) == 3 else None)
+        sys.exit(0)
 
     if len(sys.argv) >= 2 and sys.argv[1] == "--status":
         if len(sys.argv) not in (4, 5):
