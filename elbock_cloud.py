@@ -4,8 +4,8 @@ app's traffic (see CAPTURE_GUIDE.md).
 
 Flow, taken from the decompiled app:
   1. POST  https://data.elektrobock.cz/api/Auth/login   {"UserName","Password"}
-        -> {"AuthToken": <JWT>, "Id", "Login", ...}
-  2. GET   https://data.elektrobock.cz/api/UsersDevices/   (Bearer AuthToken)
+        -> {"AuthToken": <JWT>, "Id": <userId>, "Login", ...}
+  2. GET   https://data.elektrobock.cz/api/UsersDevices/<userId>  (Bearer token)
         -> [ { "UniqueIdentifier", "MqttPass", "DeviceType", "Name", ... }, ... ]
 
 The MQTT id is `UniqueIdentifier`; the MQTT password is `MqttPass`. The MQTT
@@ -87,19 +87,22 @@ def _request(path: str, *, method: str, token: str | None = None,
         raise CloudError(f"Unexpected (non-JSON) response from {path}.") from e
 
 
-def login(email: str, password: str) -> str:
-    """Return the account's JWT (AuthToken)."""
+def login(email: str, password: str) -> tuple[str, str]:
+    """Return (JWT token, account user id)."""
     result = _request("/api/Auth/login", method="POST",
                       body={"UserName": email, "Password": password})
     token = _ci(result or {}, "AuthToken", "authToken", "token", "accessToken")
+    user_id = _ci(result or {}, "Id", "id", "userId")
     if not token:
         raise CloudError("Login succeeded but no token was returned.")
-    return str(token)
+    if user_id is None:
+        raise CloudError("Login succeeded but no account id was returned.")
+    return str(token), str(user_id)
 
 
-def list_devices(token: str) -> list[CloudDevice]:
+def list_devices(token: str, user_id: str) -> list[CloudDevice]:
     """Return the account's devices, each with its MQTT id and password."""
-    result = _request("/api/UsersDevices/", method="GET", token=token)
+    result = _request(f"/api/UsersDevices/{user_id}", method="GET", token=token)
     # The endpoint returns a JSON array; tolerate a wrapper object too.
     rows = result if isinstance(result, list) else _ci(result or {}, "devices", "items", default=[])
     devices = []
@@ -119,4 +122,5 @@ def list_devices(token: str) -> list[CloudDevice]:
 
 def fetch_credentials(email: str, password: str) -> list[CloudDevice]:
     """Log in and return the account's devices (id + MQTT password)."""
-    return list_devices(login(email, password))
+    token, user_id = login(email, password)
+    return list_devices(token, user_id)

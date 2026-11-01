@@ -38,7 +38,8 @@ def make_server(casing="Pascal", token="JWT123"):
                              key("Id", "id"): 42439, key("Login", "login"): user})
 
         def do_GET(self):
-            if self.path != "/api/UsersDevices/":
+            # The app requests /api/UsersDevices/<userId>, not the bare path.
+            if self.path != "/api/UsersDevices/42439":
                 return self._json(404, {})
             if self.headers.get("Authorization") != f"Bearer {token}":
                 return self._json(401, {"error": "no token"})
