@@ -286,6 +286,10 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px}
 .sw{display:inline-block;width:12px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
 .stale{color:#b91c1c}
+.ovr{margin-top:10px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px}
+.ovr-icon{font-size:18px;flex-shrink:0}
+.ovr b{font-weight:600}
+.ovr .sub{color:var(--mute)}
 </style></head><body><main>
 <h1>Water heater · BT725</h1>
 <div class="tiles">
@@ -294,6 +298,7 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
  <div class="tile"><div class="lab">Heater status</div><div class="val" id="r">–</div><div class="sub" id="since"></div></div>
  <div class="tile"><div class="lab">Electricity tariff</div><div class="val" id="t">–</div><div class="sub" id="next"></div></div>
 </div>
+<div class="ovr" id="ovr" style="display:none"><span class="ovr-icon">⏱</span><div id="ovr-txt"></div></div>
 <div class="card"><div class="row"><b>Temperature</b>
  <div class="seg" id="rng"><button data-h="6">6 h</button><button data-h="24" class="act">24 h</button><button data-h="168">7 d</button></div></div>
  <svg id="ch" height="260" role="img" aria-label="Temperature chart"></svg>
@@ -330,6 +335,16 @@ async function status(){const s=await (await fetch("api/status")).json();
  $("age").className="sub"+(s.age>300?" stale":"");
  $("r").textContent=s.relay?"ON":"OFF";$("r").className="val "+(s.relay?"good":"bad");
  $("since").textContent=s.since?"for "+dur(Date.now()/1000-s.since):"";
+ const ov=s.control&&s.control.override;
+ if(ov){
+  const now=Date.now()/1000,active=ov.active,pending=!active&&ov.start&&ov.start>now;
+  const endStr=ov.end?fmtT(ov.end):"?";
+  let txt=`<b>Override: ${ov.temp.toFixed(1)} °C</b>`;
+  if(active){txt+=` — active until ${endStr}`;}
+  else if(pending){txt+=` — starts ${fmtT(ov.start)}, until ${endStr}`;}
+  else{txt+=` — scheduled until ${endStr}`;}
+  $("ovr-txt").innerHTML=txt;$("ovr").style.display="";
+ }else{$("ovr").style.display="none";}
 }
 async function chart(){const d=await (await fetch("api/history?hours="+H)).json(),svg=$("ch");svg.innerHTML="";
  const W=svg.clientWidth||900,Ht=260,L=34,R=8,T=8,B=22,now=Date.now()/1000,t0=now-H*3600,rows=d.rows,gap=3*d.interval;
