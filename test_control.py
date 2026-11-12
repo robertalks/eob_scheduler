@@ -51,7 +51,7 @@ def test_set_during_low_applies_now_and_persists(tmp_path):
     r = c.set_target(18.3)                     # rounded to the device's 0.5 steps
     assert r == {"ok": True, "target": 18.5, "applied_now": True}
     assert client.sent[-1] == 18.5
-    assert json.load(open(tmp_path / "state.json")) == {"user_target": 18.5}
+    assert json.load(open(tmp_path / "state.json"))["user_target"] == 18.5
 
 
 def test_set_during_high_waits_for_low(tmp_path):

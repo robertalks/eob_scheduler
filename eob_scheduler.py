@@ -102,6 +102,11 @@ class SchedulerState:
     # Low-tariff target set from EOBApp / the control API. When set, it wins
     # over both temperature sources; persisted across restarts (state_file).
     user_target: float | None = None
+    # Time-bounded override: highest priority during low tariff, active between
+    # override_start (None = immediately) and override_end (Unix timestamps).
+    override_temp: float | None = None
+    override_start: int | None = None
+    override_end: int | None = None
 
 
 def run_once(
@@ -117,8 +122,21 @@ def run_once(
     if is_low == state.last_is_low:
         return state
 
+    now_ts = int(time_module.time())
+    override_active = (
+        state.override_temp is not None
+        and state.override_end is not None
+        and now_ts < state.override_end
+        and (state.override_start is None or now_ts >= state.override_start)
+    )
+
     if is_low:
-        if state.user_target is not None:
+        if override_active:
+            target_temp = state.override_temp
+            from datetime import datetime
+            end_str = datetime.fromtimestamp(state.override_end).strftime("%Y-%m-%d %H:%M")
+            logging.info("Using scheduled override: %.1fC (until %s).", target_temp, end_str)
+        elif state.user_target is not None:
             target_temp = state.user_target
             logging.info("Using the target set from the app: %.1fC.", target_temp)
         elif temperature_source == "device":
@@ -169,6 +187,15 @@ def run_once(
     else:
         new_snapshot = state.last_on_target
         new_user_target = state.user_target
+        # Clear an expired override so it doesn't linger past its end time.
+        new_override_temp = state.override_temp
+        new_override_start = state.override_start
+        new_override_end = state.override_end
+        if state.override_end is not None and now_ts >= state.override_end:
+            new_override_temp = None
+            new_override_start = None
+            new_override_end = None
+            logging.info("Scheduled override expired; reverting to permanent target.")
         if temperature_source == "device":
             current = client.get_current_target_temperature()
             if _is_plausible_target(current):
@@ -203,7 +230,10 @@ def run_once(
             logging.exception("Failed to update thermostat; will retry next poll")
             return state
         return replace(state, last_is_low=False, last_on_target=new_snapshot,
-                       user_target=new_user_target)
+                       user_target=new_user_target,
+                       override_temp=new_override_temp,
+                       override_start=new_override_start,
+                       override_end=new_override_end)
 
 
 class ControlError(Exception):
@@ -244,23 +274,44 @@ class Controller:
         self.min_temp = max(TEMP_MIN_C, float(cfg.get("min_temperature", TEMP_MIN_C)))
         self.max_temp = min(TEMP_MAX_C, float(cfg.get("max_temperature", TEMP_MAX_C)))
         self.lock = threading.Lock()
-        self.state = SchedulerState(user_target=self._load())
+        loaded = self._load()
+        self.state = SchedulerState(
+            user_target=loaded.get("user_target"),
+            override_temp=loaded.get("override_temp"),
+            override_start=loaded.get("override_start"),
+            override_end=loaded.get("override_end"),
+        )
         if self.state.user_target is not None:
             logging.info("Loaded app-set target %.1fC from %s.",
                          self.state.user_target, self.state_file)
+        if self.state.override_temp is not None:
+            from datetime import datetime
+            end_str = datetime.fromtimestamp(self.state.override_end).strftime("%Y-%m-%d %H:%M") \
+                if self.state.override_end else "?"
+            logging.info("Loaded scheduled override %.1fC (until %s) from %s.",
+                         self.state.override_temp, end_str, self.state_file)
         self.on_change = None  # set by eob_stats: refresh the dashboard soon
 
     # --- persistence
-    def _load(self) -> float | None:
+    def _load(self) -> dict:
         if not self.state_file or not os.path.exists(self.state_file):
-            return None
+            return {}
         try:
             with open(self.state_file, "r", encoding="utf-8") as f:
-                v = json.load(f).get("user_target")
-            return None if v is None else float(v)
+                raw = json.load(f)
+            result = {}
+            if raw.get("user_target") is not None:
+                result["user_target"] = float(raw["user_target"])
+            if raw.get("override_temp") is not None:
+                result["override_temp"] = float(raw["override_temp"])
+            if raw.get("override_start") is not None:
+                result["override_start"] = int(raw["override_start"])
+            if raw.get("override_end") is not None:
+                result["override_end"] = int(raw["override_end"])
+            return result
         except Exception:
             logging.exception("Could not read %s; ignoring it.", self.state_file)
-            return None
+            return {}
 
     def _save(self) -> None:
         if not self.state_file:
@@ -268,7 +319,12 @@ class Controller:
         tmp = self.state_file + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"user_target": self.state.user_target}, f)
+                json.dump({
+                    "user_target": self.state.user_target,
+                    "override_temp": self.state.override_temp,
+                    "override_start": self.state.override_start,
+                    "override_end": self.state.override_end,
+                }, f)
             os.replace(tmp, self.state_file)  # atomic: never a half-written file
         except Exception:
             logging.exception("Could not write %s.", self.state_file)
@@ -276,10 +332,12 @@ class Controller:
     # --- scheduler loop
     def tick(self) -> None:
         with self.lock:
-            before = self.state.user_target
+            before_user = self.state.user_target
+            before_override = (self.state.override_temp, self.state.override_end)
             self.state = run_once(self.schedule, self.client, self.fallback_temp,
                                   self.temperature_source, self.state)
-            if self.state.user_target != before:
+            if (self.state.user_target != before_user or
+                    (self.state.override_temp, self.state.override_end) != before_override):
                 self._save()
 
     # --- control API
@@ -330,6 +388,68 @@ class Controller:
         self._changed()
         return {"ok": True, "target": target, "applied_now": applied_now}
 
+    def set_override(self, temp, start_ts, end_ts) -> dict:
+        """Set a time-bounded temperature override (highest priority during low tariff)."""
+        if not self.enabled:
+            raise ControlError("Remote control is disabled in config.yaml.", 403)
+        try:
+            temp = float(temp)
+        except (TypeError, ValueError):
+            raise ControlError("temp must be a number")
+        if not math.isfinite(temp):
+            raise ControlError("temp must be a number")
+        temp = round(temp / self.STEP) * self.STEP
+        if not (self.min_temp <= temp <= self.max_temp):
+            raise ControlError(
+                f"temp must be between {self.min_temp:.1f} and {self.max_temp:.1f} C")
+        now_ts = int(time_module.time())
+        try:
+            end_ts = int(end_ts)
+        except (TypeError, ValueError):
+            raise ControlError("end must be a Unix timestamp integer")
+        if end_ts <= now_ts:
+            raise ControlError("end must be in the future")
+        if start_ts is not None:
+            try:
+                start_ts = int(start_ts)
+            except (TypeError, ValueError):
+                raise ControlError("start must be a Unix timestamp integer or null")
+        with self.lock:
+            applied_now = False
+            active_now = start_ts is None or now_ts >= start_ts
+            if active_now and self.state.last_is_low:
+                self._send(temp)
+                applied_now = True
+            self.state = replace(self.state, override_temp=temp,
+                                 override_start=start_ts, override_end=end_ts)
+            self._save()
+        from datetime import datetime
+        end_str = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M")
+        logging.info("Scheduled override set: %.1fC until %s (%s).", temp, end_str,
+                     "applied now" if applied_now else "pending")
+        self._changed()
+        return {"ok": True, "override_temp": temp, "override_start": start_ts,
+                "override_end": end_ts, "applied_now": applied_now}
+
+    def clear_override(self) -> dict:
+        """Remove the scheduled override; falls back to user_target or config."""
+        if not self.enabled:
+            raise ControlError("Remote control is disabled in config.yaml.", 403)
+        with self.lock:
+            self.state = replace(self.state, override_temp=None,
+                                 override_start=None, override_end=None)
+            self._save()
+            applied_now = False
+            if self.state.last_is_low:
+                fallback = self.state.user_target if self.state.user_target is not None \
+                    else self._default_target()
+                if fallback is not None:
+                    self._send(fallback)
+                    applied_now = True
+        logging.info("Scheduled override cleared.")
+        self._changed()
+        return {"ok": True, "applied_now": applied_now}
+
     def _send(self, temp: float) -> None:
         try:
             self.client.set_temperature(temp)
@@ -346,16 +466,40 @@ class Controller:
         """For /api/status: what the app needs to offer the control."""
         with self.lock:
             user = self.state.user_target
-            low_target = user if user is not None else self._default_target()
-        return {
+            ov_temp = self.state.override_temp
+            ov_start = self.state.override_start
+            ov_end = self.state.override_end
+            now_ts = int(time_module.time())
+            override_active = (
+                ov_temp is not None
+                and ov_end is not None
+                and now_ts < ov_end
+                and (ov_start is None or now_ts >= ov_start)
+            )
+            if override_active:
+                low_target = ov_temp
+            elif user is not None:
+                low_target = user
+            else:
+                low_target = self._default_target()
+        result = {
             "enabled": self.enabled,
             "min": self.min_temp,
             "max": self.max_temp,
             "step": self.STEP,
-            # The temperature low-tariff periods run at, and where it comes from.
             "target": low_target,
-            "source": "app" if user is not None else self.temperature_source,
+            "source": "override" if override_active else ("app" if user is not None else self.temperature_source),
         }
+        if ov_temp is not None:
+            result["override"] = {
+                "temp": ov_temp,
+                "start": ov_start,
+                "end": ov_end,
+                "active": override_active,
+            }
+        else:
+            result["override"] = None
+        return result
 
     def _changed(self) -> None:
         if self.on_change:

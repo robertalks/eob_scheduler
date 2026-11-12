@@ -425,8 +425,11 @@ def _make_handler(store: StatsStore, controller=None):
                 self._send(500, json.dumps({"error": str(e)}), "application/json")
 
         # --- control API (EOBApp): change the low-tariff target temperature.
-        #   POST   /api/target  {"target": 18.5}   set it
-        #   DELETE /api/target                     back to the configured behaviour
+        #   POST   /api/target    {"target": 18.5}                     set permanent target
+        #   DELETE /api/target                                          clear permanent target
+        #   POST   /api/override  {"temp": 18.0, "end": <unix_ts>,
+        #                          "start": <unix_ts>}                 set time-bounded override
+        #   DELETE /api/override                                        clear override
         # Needs `control.enabled` + `control.token` in config.yaml, and the token
         # in "Authorization: Bearer <token>" -- Cloudflare Access alone isn't
         # enough, because port 8080 is also reachable from the LAN.
@@ -438,7 +441,7 @@ def _make_handler(store: StatsStore, controller=None):
 
         def _control(self, method):
             u = urlparse(self.path)
-            if u.path != "/api/target":
+            if u.path not in ("/api/target", "/api/override"):
                 return self._send(404, json.dumps({"error": "not found"}), "application/json")
             if controller is None or not controller.enabled:
                 return self._send(403, json.dumps({"error": "Remote control is disabled in config.yaml."}),
@@ -451,20 +454,36 @@ def _make_handler(store: StatsStore, controller=None):
                 return self._send(401, json.dumps({"error": "Wrong or missing control token."}),
                                   "application/json")
             try:
-                if method == "DELETE":
-                    result = controller.clear_target()
+                if u.path == "/api/override":
+                    if method == "DELETE":
+                        result = controller.clear_override()
+                    else:
+                        length = int(self.headers.get("Content-Length") or 0)
+                        if length <= 0 or length > MAX_BODY:
+                            raise ValueError("body")
+                        body = json.loads(self.rfile.read(length))
+                        if not isinstance(body, dict) or "temp" not in body or "end" not in body:
+                            raise ValueError("body")
+                        result = controller.set_override(body["temp"], body.get("start"), body["end"])
                 else:
-                    length = int(self.headers.get("Content-Length") or 0)
-                    if length <= 0 or length > MAX_BODY:
-                        raise ValueError("body")
-                    body = json.loads(self.rfile.read(length))
-                    if not isinstance(body, dict) or "target" not in body:
-                        raise ValueError("body")
-                    result = controller.set_target(body["target"])
+                    if method == "DELETE":
+                        result = controller.clear_target()
+                    else:
+                        length = int(self.headers.get("Content-Length") or 0)
+                        if length <= 0 or length > MAX_BODY:
+                            raise ValueError("body")
+                        body = json.loads(self.rfile.read(length))
+                        if not isinstance(body, dict) or "target" not in body:
+                            raise ValueError("body")
+                        result = controller.set_target(body["target"])
                 self._send(200, json.dumps(result), "application/json")
             except ValueError:
-                self._send(400, json.dumps({"error": 'Expected JSON like {"target": 18.5}.'}),
-                           "application/json")
+                if u.path == "/api/override":
+                    self._send(400, json.dumps({"error": 'Expected JSON like {"temp": 18.0, "end": 1234567890}.'}),
+                               "application/json")
+                else:
+                    self._send(400, json.dumps({"error": 'Expected JSON like {"target": 18.5}.'}),
+                               "application/json")
             except Exception as e:
                 status = getattr(e, "status", None)
                 if status is None:
