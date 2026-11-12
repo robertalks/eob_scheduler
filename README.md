@@ -190,17 +190,36 @@ stats web server also accepts:
 
 - `POST /api/target` with `{"target": 18.5}` -- set the low-tariff target
 - `DELETE /api/target` -- back to the configured behaviour
+- `POST /api/override` with `{"temp": 18.5, "end": <unix_ts>}` -- set a
+  time-bounded override (optional `"start": <unix_ts>`; omit for immediate)
+- `DELETE /api/override` -- clear the override
 
-Both need `Authorization: Bearer <control.token>`. The token is required on
-top of Cloudflare Access because the port is also reachable on the LAN; with
-no token configured, control stays disabled.
+All four need `Authorization: Bearer <control.token>`. The token is required
+on top of Cloudflare Access because the port is also reachable on the LAN;
+with no token configured, control stays disabled.
 
-How it fits the tariff logic:
+### Priority order for the low-tariff target temperature
 
-- A target set from the app is used for **every** low-tariff period (it wins
-  over `temperature_source`) and is saved to `state_file`, so it survives a
-  restart -- including one during high tariff, when the device itself reports
-  0.0C.
+Three layers, highest first:
+
+1. **Scheduled override** (`/api/override`) — active between `start` and
+   `end` (Unix timestamps). Highest priority. Expires automatically; the
+   scheduler clears it on the next tariff transition after `end`.
+2. **Permanent target** (`/api/target`) — set from the app, used for every
+   low-tariff period until explicitly cleared.
+3. **Config fallback** — `temperature_source` / `target_temperature` from
+   `config.yaml`.
+
+The override is useful for e.g. "heat at 18C from tomorrow 10:00 until
+Sunday 10:00, then fall back to the normal 13C". Only low-tariff periods
+are affected — the heater still stays forced off during high tariff
+regardless.
+
+How the permanent target fits the tariff logic:
+
+- A target set from the app wins over `temperature_source` and is saved to
+  `state_file`, so it survives a restart -- including one during high tariff,
+  when the device itself reports 0.0C.
 - During low tariff it's sent to the thermostat immediately. During high
   tariff the heater stays forced off; the new target applies at the next low
   tariff.
@@ -211,7 +230,8 @@ How it fits the tariff logic:
   `control.min_temperature`/`max_temperature` can narrow it).
 
 `/api/status` includes a `control` object (enabled, range, step, the current
-low-tariff target and where it comes from) so the app knows what to offer.
+low-tariff target, where it comes from, and any active/pending override) so
+the app knows what to offer.
 
 ## Reading ambient/current temperature (solved 2026-10-16)
 
