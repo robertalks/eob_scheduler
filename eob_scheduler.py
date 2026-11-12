@@ -424,8 +424,11 @@ class Controller:
                                  override_start=start_ts, override_end=end_ts)
             self._save()
         from datetime import datetime
+        start_str = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M") \
+            if start_ts is not None else "now"
         end_str = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M")
-        logging.info("Scheduled override set: %.1fC until %s (%s).", temp, end_str,
+        logging.info("Scheduled override set: %.1fC from %s until %s (%s).",
+                     temp, start_str, end_str,
                      "applied now" if applied_now else "pending")
         self._changed()
         return {"ok": True, "override_temp": temp, "override_start": start_ts,
