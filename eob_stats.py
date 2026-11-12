@@ -338,10 +338,11 @@ async function status(){const s=await (await fetch("api/status")).json();
  const ov=s.control&&s.control.override;
  if(ov){
   const now=Date.now()/1000,active=ov.active,pending=!active&&ov.start&&ov.start>now;
-  const endStr=ov.end?fmtT(ov.end):"?";
+  const fmtDT=ts=>dayLabel(ts)+" "+fmtT(ts);
+  const endStr=ov.end?fmtDT(ov.end):"?";
   let txt=`<b>Override: ${ov.temp.toFixed(1)} °C</b>`;
   if(active){txt+=` — active until ${endStr}`;}
-  else if(pending){txt+=` — starts ${fmtT(ov.start)}, until ${endStr}`;}
+  else if(pending){txt+=` — starts ${fmtDT(ov.start)}, until ${endStr}`;}
   else{txt+=` — scheduled until ${endStr}`;}
   $("ovr-txt").innerHTML=txt;$("ovr").style.display="";
  }else{$("ovr").style.display="none";}
