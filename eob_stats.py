@@ -424,7 +424,15 @@ def _make_handler(store: StatsStore, controller=None):
                 if u.path == "/api/status":
                     data = store.status()
                     if controller is not None:
-                        data["control"] = controller.info()
+                        ctl = controller.info()
+                        data["control"] = ctl
+                        # `desired` comes from the DB (last value written to the thermostat).
+                        # While an override or app target is active it can lag up to one poll
+                        # cycle (60 s). Use the live control.target instead so the dashboard
+                        # and app always show the correct intended temperature.
+                        ov = ctl.get("override") or {}
+                        if ov.get("active") and data.get("desired") is not None:
+                            data["desired"] = ctl["target"]
                 elif u.path == "/api/history":
                     data = store.history(min(float(q.get("hours", ["24"])[0]), 24 * 31))
                 elif u.path == "/api/daily":
