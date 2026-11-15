@@ -236,6 +236,9 @@ class StatsCollector:
             logger.info("stats: thermostat responding again (after %d missed polls)",
                         self._misses)
         self._misses = 0
+        if status.get("sensor_error"):
+            logger.warning("stats: thermostat reported sensor error -- skipping this reading")
+            return
         if self.store.add(status):
             logger.info("Heater relay switched %s (measured %.1fC, target %.1fC)",
                         "ON" if status["relay_on"] else "OFF",

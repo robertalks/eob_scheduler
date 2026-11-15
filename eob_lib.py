@@ -171,16 +171,19 @@ def parse_therm_settings(p: bytes) -> dict:
     """Decode an 80 02 status payload (see module docstring)."""
     if len(p) < 7 or p[0] == 0xFF:
         return {}  # 0xFF = other device layouts (BT722 etc.), not ours
+    sensor_error = _bit(p[6], 7)
     measured = p[0] + (p[2] & 0x0F) / 10
     if _bit(p[4], 7):
         measured = -measured
     return {
         "target_temp_c": p[5] / 2.0,
-        "measured_temp_c": round(measured, 1),
+        # None when the device reports a sensor fault (p[6] bit 7); the raw
+        # value in that case is a sentinel (typically 100.0C) not a real reading.
+        "measured_temp_c": None if sensor_error else round(measured, 1),
         "relay_on": _bit(p[6], 6),
         "auto_mode": _bit(p[4], 0),
         "off_mode": _bit(p[6], 2),
-        "sensor_error": _bit(p[6], 7),
+        "sensor_error": sensor_error,
     }
 
 
