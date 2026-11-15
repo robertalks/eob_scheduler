@@ -200,9 +200,13 @@ def run_once(
             current = client.get_current_target_temperature()
             if _is_plausible_target(current):
                 new_snapshot = current
-                if new_user_target is not None and abs(current - new_user_target) >= 0.25:
+                if (not override_active
+                        and new_user_target is not None
+                        and abs(current - new_user_target) >= 0.25):
                     # Changed on the device (e.g. in the Elektrobock app) after
                     # it was set from EOBApp: the most recent change wins.
+                    # Skip if an override was active — the device temp reflects
+                    # the override, not a manual user change.
                     logging.info(
                         "Target was changed on the device (%.1fC -> %.1fC); "
                         "following it.", new_user_target, current,
