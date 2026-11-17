@@ -362,7 +362,7 @@ async function chart(){const d=await (await fetch("api/history?hours="+H)).json(
  band(4,"var(--nt)");band(3,"var(--on)");
  for(let v=lo;v<=hi;v+=st){el("line",{x1:L,x2:W-R,y1:y(v),y2:y(v),stroke:"var(--line)"},svg);
    el("text",{x:L-5,y:y(v)+4,"text-anchor":"end"},svg).textContent=v}
- const step=H<=6?3600:H<=24?(W<600?6:3)*3600:86400;let tt=Math.ceil(t0/step)*step;
+ const step=H<=6?3600:H<=24?(W<600?6:3)*3600:H<=168?86400:86400*7;let tt=Math.ceil(t0/step)*step;
  for(;tt<now;tt+=step){const lab=step>=86400?new Date(tt*1000).toLocaleDateString([], {weekday:"short",day:"numeric"}):fmtT(tt);
    el("text",{x:x(tt),y:Ht-6,"text-anchor":"middle"},svg).textContent=lab}
  const path=i=>{let p="",prev=null;rows.forEach(r=>{if(i===2&&!r[2]){prev=null;return}p+=(prev===null||r[0]-prev>gap?"M":"L")+x(r[0]).toFixed(1)+" "+y(r[i]).toFixed(1);prev=r[0]});return p};
