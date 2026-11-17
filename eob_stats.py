@@ -303,7 +303,7 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
 </div>
 <div class="ovr" id="ovr" style="display:none"><span class="ovr-icon">⏱</span><div id="ovr-txt"></div></div>
 <div class="card"><div class="row"><b>Temperature</b>
- <div class="seg" id="rng"><button data-h="6">6 h</button><button data-h="24" class="act">24 h</button><button data-h="168">7 d</button></div></div>
+ <div class="seg" id="rng"><button data-h="6">6 h</button><button data-h="24" class="act">24 h</button><button data-h="168">7 d</button><button data-h="720">30 d</button><button data-h="1440">60 d</button></div></div>
  <svg id="ch" height="260" role="img" aria-label="Temperature chart"></svg>
  <div class="legend"><span><i class="sw" style="background:var(--temp)"></i>measured</span>
  <span><i class="sw" style="background:var(--target)"></i>target (hidden while forced off)</span>
@@ -437,7 +437,7 @@ def _make_handler(store: StatsStore, controller=None):
                         if ov.get("active") and data.get("desired") is not None:
                             data["desired"] = ctl["target"]
                 elif u.path == "/api/history":
-                    data = store.history(min(float(q.get("hours", ["24"])[0]), 24 * 31))
+                    data = store.history(min(float(q.get("hours", ["24"])[0]), 24 * 60))
                 elif u.path == "/api/daily":
                     data = store.daily(max(1, min(int(q.get("days", ["14"])[0]), 366)))
                 elif u.path == "/api/cycles":
