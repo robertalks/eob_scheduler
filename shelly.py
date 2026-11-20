@@ -232,29 +232,37 @@ class ShellyStore:
         Counter resets (total decreasing) are skipped, not subtracted.
         `now` overrides the clock (for tests).
         `current_kwh`/`current_ts` close the final open interval so the most
-        recent energy (not yet followed by another logged row) is included."""
+        recent energy (not yet followed by another logged row) is included.
+
+        Each delta is attributed to t1's day (the later reading), so deltas
+        that straddle midnight land on the correct day and the prior-row
+        baseline always credits energy to the first in-window reading's day.
+        """
         base = (now or datetime.now(tz)).astimezone(tz)
         today = base.replace(hour=0, minute=0, second=0, microsecond=0)
         start = today - timedelta(days=days - 1)
-        # Pull a little before start to catch the first delta of the first day
         since = int(start.timestamp()) - update_seconds
 
         with self._lock:
             rows = self._db.execute(
                 "SELECT ts, total_kwh FROM power_readings "
                 "WHERE device=? AND ts>=? ORDER BY ts", (device, since)).fetchall()
-            # One row just before the window: used as baseline so the first
-            # stored reading's value isn't silently lost.
             prior = self._db.execute(
                 "SELECT ts, total_kwh FROM power_readings "
                 "WHERE device=? AND ts<? ORDER BY ts DESC LIMIT 1",
                 (device, since)).fetchone()
 
-        # Prepend the prior row (or a synthetic zero baseline if none exists)
-        # so the very first in-window reading contributes its delta too.
         if rows:
-            baseline = prior if prior else (rows[0][0], 0.0)
-            rows = [baseline] + list(rows)
+            if prior:
+                baseline = prior
+            else:
+                # No prior row: device is new. Only treat counter as starting
+                # from zero when the value is plausibly small (< 1 kWh); larger
+                # values indicate the DB was wiped with history already on the
+                # device, so skip the synthetic baseline to avoid overcounting.
+                baseline = (rows[0][0], 0.0) if rows[0][1] < 1.0 else None
+            if baseline:
+                rows = [baseline] + list(rows)
 
         out = {}
         for d in range(days):
@@ -265,7 +273,9 @@ class ShellyStore:
             if kwh1 <= kwh0:
                 continue  # counter reset or no change: skip
             delta = kwh1 - kwh0
-            day_key = datetime.fromtimestamp(t0, tz).strftime("%Y-%m-%d")
+            # Attribute to t1's day: the interval ends there, and this ensures
+            # the prior-row baseline credits energy to the first in-window day.
+            day_key = datetime.fromtimestamp(t1, tz).strftime("%Y-%m-%d")
             if day_key in out:
                 out[day_key] += delta
 
@@ -273,7 +283,7 @@ class ShellyStore:
         if rows and current_kwh is not None and current_ts is not None:
             last_ts, last_kwh = rows[-1]
             if current_kwh > last_kwh and current_ts > last_ts:
-                day_key = datetime.fromtimestamp(last_ts, tz).strftime("%Y-%m-%d")
+                day_key = datetime.fromtimestamp(current_ts, tz).strftime("%Y-%m-%d")
                 if day_key in out:
                     out[day_key] += current_kwh - last_kwh
 

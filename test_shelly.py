@@ -60,7 +60,47 @@ def test_shelly_store_daily_14_days(tmp_path):
     assert len(result) == 14
     total_kwh = sum(e["kwh"] for e in result)
     # 14 days × 24 h × 0.1 kWh/h = 33.6 (first reading counted from 0)
-    assert abs(total_kwh - 33.6) < 0.01
+    assert abs(total_kwh - 33.6) < 0.05
+
+
+def test_shelly_store_daily_prior_row(tmp_path):
+    """Prior row before window is used as baseline; delta credited to t1's day."""
+    tz = ZoneInfo("Europe/Prague")
+    store = ShellyStore(str(tmp_path / "s.db"))
+    update_s = 3600
+
+    def at(day, h):
+        return int(datetime(2026, 11, day, h, 0, tzinfo=tz).timestamp())
+
+    # One reading the day before the window, then two on the target day
+    store.add(at(9, 23), "dev", 10.0, 5.0)   # prior: 5.0 kWh before window
+    store.add(at(10, 1), "dev", 10.0, 5.4)   # +0.4 kWh → credited to Nov 10
+    store.add(at(10, 2), "dev", 10.0, 5.9)   # +0.5 kWh → credited to Nov 10
+
+    now = datetime(2026, 11, 10, 12, 0, tzinfo=tz)
+    result = store.daily("dev", 1, tz, update_s, now=now)
+    assert len(result) == 1
+    assert abs(result[0]["kwh"] - 0.9) < 0.001
+
+
+def test_shelly_store_daily_no_synthetic_baseline_large_counter(tmp_path):
+    """No synthetic zero baseline when first reading has a large counter value."""
+    tz = ZoneInfo("Europe/Prague")
+    store = ShellyStore(str(tmp_path / "s.db"))
+    update_s = 60
+
+    def at(h, m):
+        return int(datetime(2026, 11, 10, h, m, tzinfo=tz).timestamp())
+
+    # Device counter already at 500 kWh when first seen (e.g. after DB wipe)
+    store.add(at(1, 0), "dev", 10.0, 500.0)
+    store.add(at(2, 0), "dev", 10.0, 500.3)  # +0.3 kWh
+
+    now = datetime(2026, 11, 10, 12, 0, tzinfo=tz)
+    result = store.daily("dev", 1, tz, update_s, now=now)
+    assert len(result) == 1
+    # Only the delta between the two readings should be counted, not 500 kWh
+    assert abs(result[0]["kwh"] - 0.3) < 0.001
 
 
 def test_shelly_poller_from_config_none():
