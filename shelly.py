@@ -140,15 +140,21 @@ class ShellyDevice:
 
     def poll(self, store: "ShellyStore") -> None:
         """Read device, store result, schedule next poll."""
-        reading = self._detect_and_read()
-        ts = int(time.time())
-        if reading is not None:
-            store.add(ts, self.name, reading["power_w"], reading["total_kwh"])
-            with self._lock:
-                self._last_reading = {"ts": ts, **reading}
-            logger.debug("shelly[%s]: %.1f W, %.4f kWh total", self.name,
-                         reading["power_w"], reading["total_kwh"])
-        self._schedule_next(store)
+        try:
+            reading = self._detect_and_read()
+            ts = int(time.time())
+            if reading is not None:
+                store.add(ts, self.name, reading["power_w"], reading["total_kwh"])
+                with self._lock:
+                    self._last_reading = {"ts": ts, **reading}
+                logger.info("shelly[%s]: %.1f W, %.3f kWh total", self.name,
+                            reading["power_w"], reading["total_kwh"])
+            else:
+                logger.warning("shelly[%s]: poll returned no reading", self.name)
+        except Exception:
+            logger.exception("shelly[%s]: unexpected error during poll", self.name)
+        finally:
+            self._schedule_next(store)
 
     def _schedule_next(self, store: "ShellyStore") -> None:
         with self._lock:
