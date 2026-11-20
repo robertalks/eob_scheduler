@@ -421,8 +421,7 @@ async function pwCharts(){
   const svgId="pw-svg-"+dev.name.replace(/\W/g,"_");
   const totalKwh=days.reduce((s,v)=>s+v.kwh,0);
   const totStr=days.length?`last 14 days: ${fmtKwh(totalKwh)}`:"last 14 days: no data";
-  wrap.innerHTML+=`<div class="row" style="margin-bottom:4px"><b>${dev.name} · daily usage</b></div>`+
-   `<div class="sub" style="margin-bottom:6px">${totStr}</div>`+
+  wrap.innerHTML+=`<div class="row" style="margin-bottom:4px"><b>${dev.name} · daily usage</b><span class="sub">${totStr}</span></div>`+
    `<svg id="${svgId}" height="200" role="img" aria-label="${dev.name} daily kWh"></svg>`;
   const svg=document.getElementById(svgId);
   const W=svg.clientWidth||900,Ht=200,L=42,R=8,T=8,B=22,n=days.length;
