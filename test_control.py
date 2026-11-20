@@ -114,3 +114,56 @@ def test_token_check(tmp_path):
     no_token = Controller(FakeSchedule(True), DeviceReading(), 15.0, "config", None,
                           {"enabled": True, "token": ""})
     assert not no_token.enabled and not no_token.check_token("")
+
+
+def test_override_activates_mid_low_tariff(tmp_path):
+    """An override with a future start_ts must be applied when start_ts arrives
+    while the tariff is already low, without waiting for a high->low transition."""
+    import time
+    c, sched, client = make(tmp_path, low=True)
+    c.tick()                                       # -> low tariff, config target 15
+    assert client.sent == [15.0]
+
+    now = int(time.time())
+    # Set override starting 1 second in the future (simulates "starts at 10AM").
+    c.set_override(18.5, start_ts=now + 1, end_ts=now + 3600)
+    assert client.sent == [15.0]                   # not applied yet — start is future
+
+    # Simulate time passing: next tick sees start_ts now in the past.
+    # We patch time by calling run_once indirectly via tick(); to do that
+    # without actually sleeping we directly manipulate the state to simulate
+    # the scenario: last_override_active=False, start_ts now expired.
+    import eob_scheduler
+    old_time = eob_scheduler.time_module.time
+    eob_scheduler.time_module.time = lambda: now + 2    # advance clock past start_ts
+    try:
+        c.tick()
+    finally:
+        eob_scheduler.time_module.time = old_time
+
+    assert client.sent[-1] == 18.5
+
+
+def test_override_expires_mid_low_tariff(tmp_path):
+    """When an override expires while tariff is still low, the scheduler
+    should revert to the fallback target immediately."""
+    import time
+    import eob_scheduler
+
+    now = int(time.time())
+    c, sched, client = make(tmp_path, low=True)
+    c.tick()
+    assert client.sent == [15.0]
+
+    # Set override that is active right now.
+    c.set_override(22.0, start_ts=None, end_ts=now + 60)
+    assert client.sent[-1] == 22.0                 # applied immediately
+
+    # Advance clock past end_ts so the override is expired.
+    eob_scheduler.time_module.time = lambda: now + 120
+    try:
+        c.tick()
+    finally:
+        eob_scheduler.time_module.time = __import__("time").time
+
+    assert client.sent[-1] == 15.0                 # reverted to config fallback

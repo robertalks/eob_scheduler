@@ -107,6 +107,52 @@ class SchedulerState:
     override_temp: float | None = None
     override_start: int | None = None
     override_end: int | None = None
+    # Whether the override was active on the last tick -- lets run_once detect
+    # the moment an override activates or expires mid-low-tariff and re-send.
+    last_override_active: bool | None = None
+
+
+def _pick_low_tariff_target(
+    state: SchedulerState,
+    override_active: bool,
+    fallback_temp: float,
+    temperature_source: str,
+    client,
+) -> float:
+    """Return the target temperature to send during low tariff."""
+    from datetime import datetime
+    if override_active:
+        end_str = datetime.fromtimestamp(state.override_end).strftime("%Y-%m-%d %H:%M")
+        logging.info("Using scheduled override: %.1fC (until %s).", state.override_temp, end_str)
+        return state.override_temp
+    if state.user_target is not None:
+        logging.info("Using the target set from the app: %.1fC.", state.user_target)
+        return state.user_target
+    if temperature_source == "device":
+        if state.last_on_target is not None:
+            logging.info(
+                "temperature_source=device: reapplying %.1fC snapshotted "
+                "from before the last off period.", state.last_on_target,
+            )
+            return state.last_on_target
+        # No snapshot yet -- try a live read as a best-effort guess, but only
+        # trust it if it's a plausible real value (see _is_plausible_target:
+        # 0.0C means the device is off, not a genuine target to reapply).
+        current = client.get_current_target_temperature()
+        if _is_plausible_target(current):
+            logging.info(
+                "temperature_source=device: no snapshot yet, read "
+                "%.1fC currently on the device, using that.", current,
+            )
+            return current
+        logging.warning(
+            "temperature_source=device: no snapshot and no "
+            "plausible live reading available (got %s), "
+            "falling back to config target_temperature=%.1fC.",
+            f"{current:.1f}C" if current is not None else "none",
+            fallback_temp,
+        )
+    return fallback_temp
 
 
 def run_once(
@@ -116,11 +162,9 @@ def run_once(
     temperature_source: str,
     state: SchedulerState,
 ) -> SchedulerState:
-    """Check current tariff state, push a change to the thermostat if the
-    low/high tariff state actually changed. Returns the new state."""
+    """Check current tariff and override state; push a command to the thermostat
+    when something meaningful changed. Returns the new state."""
     is_low = schedule.is_low_tariff()
-    if is_low == state.last_is_low:
-        return state
 
     now_ts = int(time_module.time())
     override_active = (
@@ -130,50 +174,32 @@ def run_once(
         and (state.override_start is None or now_ts >= state.override_start)
     )
 
+    tariff_changed = is_low != state.last_is_low
+    # Detect override activating or expiring while already in low tariff.
+    override_flip = (
+        is_low
+        and state.last_is_low  # was already low last tick
+        and override_active != state.last_override_active
+    )
+
+    if not tariff_changed and not override_flip:
+        return state
+
     if is_low:
-        if override_active:
-            target_temp = state.override_temp
-            from datetime import datetime
-            end_str = datetime.fromtimestamp(state.override_end).strftime("%Y-%m-%d %H:%M")
-            logging.info("Using scheduled override: %.1fC (until %s).", target_temp, end_str)
-        elif state.user_target is not None:
-            target_temp = state.user_target
-            logging.info("Using the target set from the app: %.1fC.", target_temp)
-        elif temperature_source == "device":
-            if state.last_on_target is not None:
-                target_temp = state.last_on_target
-                logging.info(
-                    "temperature_source=device: reapplying %.1fC snapshotted "
-                    "from before the last off period.", target_temp,
-                )
-            else:
-                # No snapshot yet -- try a live read as a best-effort
-                # guess, but only trust it if it's a plausible real value
-                # (see _is_plausible_target: 0.0C means the device is
-                # currently off, not a genuine target to reapply).
-                current = client.get_current_target_temperature()
-                if _is_plausible_target(current):
-                    target_temp = current
-                    logging.info(
-                        "temperature_source=device: no snapshot yet, read "
-                        "%.1fC currently on the device, using that.",
-                        current,
-                    )
-                else:
-                    target_temp = fallback_temp
-                    logging.warning(
-                        "temperature_source=device: no snapshot and no "
-                        "plausible live reading available (got %s), "
-                        "falling back to config target_temperature=%.1fC.",
-                        f"{current:.1f}C" if current is not None else "none",
-                        fallback_temp,
-                    )
-        else:
-            target_temp = fallback_temp
-        logging.info(
-            "Tariff state changed -> low tariff: set target temperature = %.1fC",
-            target_temp,
+        target_temp = _pick_low_tariff_target(
+            state, override_active, fallback_temp, temperature_source, client
         )
+        if tariff_changed:
+            logging.info(
+                "Tariff state changed -> low tariff: set target temperature = %.1fC",
+                target_temp,
+            )
+        else:
+            logging.info(
+                "Override %s during low tariff: set target temperature = %.1fC",
+                "activated" if override_active else "expired",
+                target_temp,
+            )
         try:
             client.set_temperature(target_temp)
         except NotImplementedError as e:
@@ -182,7 +208,7 @@ def run_once(
         except Exception:
             logging.exception("Failed to update thermostat; will retry next poll")
             return state
-        return replace(state, last_is_low=True)
+        return replace(state, last_is_low=True, last_override_active=override_active)
 
     else:
         new_snapshot = state.last_on_target
@@ -237,7 +263,8 @@ def run_once(
                        user_target=new_user_target,
                        override_temp=new_override_temp,
                        override_start=new_override_start,
-                       override_end=new_override_end)
+                       override_end=new_override_end,
+                       last_override_active=False)
 
 
 class ControlError(Exception):
@@ -425,7 +452,8 @@ class Controller:
                 self._send(temp)
                 applied_now = True
             self.state = replace(self.state, override_temp=temp,
-                                 override_start=start_ts, override_end=end_ts)
+                                 override_start=start_ts, override_end=end_ts,
+                                 last_override_active=applied_now)
             self._save()
         from datetime import datetime
         start_str = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M") \
