@@ -262,10 +262,10 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>
 :root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1b;--mute:#6f6d68;--line:#e3e1dc;
 --temp:#c2410c;--target:#6f6d68;--on:rgba(194,65,12,.16);--nt:rgba(21,128,61,.08);
---low:#15803d;--high:#b91c1c;--unk:#a8a29e;--good:#15803d;--bad:#b91c1c}
+--low:#15803d;--high:#b91c1c;--unk:#a8a29e;--good:#15803d;--bad:#b91c1c;--pw:#1d4ed8}
 @media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1f1e1c;--ink:#ecebe7;
 --mute:#9b9890;--line:#33312e;--temp:#fb923c;--target:#9b9890;--on:rgba(251,146,60,.18);
---nt:rgba(74,222,128,.10);--low:#4ade80;--high:#f87171;--unk:#6f6d68;--good:#4ade80;--bad:#f87171}}
+--nt:rgba(74,222,128,.10);--low:#4ade80;--high:#f87171;--unk:#6f6d68;--good:#4ade80;--bad:#f87171;--pw:#60a5fa}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
 font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 main{max-width:960px;margin:0 auto;padding:20px 16px 40px}
@@ -302,6 +302,7 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
  <div class="tile"><div class="lab">Electricity tariff</div><div class="val" id="t">–</div><div class="sub" id="next"></div></div>
 </div>
 <div class="ovr" id="ovr" style="display:none"><span class="ovr-icon">⏱</span><div id="ovr-txt"></div></div>
+<div class="tiles" id="pw-tiles" style="display:none;margin-top:14px"></div>
 <div class="card"><div class="row"><b>Temperature</b>
  <div class="seg" id="rng"><button data-h="6">6 h</button><button data-h="24" class="act">24 h</button><button data-h="168">7 d</button><button data-h="720">30 d</button><button data-h="1440">60 d</button></div></div>
  <svg id="ch" height="260" role="img" aria-label="Temperature chart"></svg>
@@ -317,6 +318,7 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
 <div class="card"><div class="row"><b>Recent heating</b>
  <div class="seg" id="cyrng"><button data-h="24">24 h</button><button data-h="48" class="act">48 h</button><button data-h="168">7 d</button><button data-h="720">30 d</button><button data-h="1440">60 d</button></div></div>
  <div id="cywrap"></div></div>
+<div class="card" id="pw-charts" style="display:none"></div>
 </main><script>
 const $=id=>document.getElementById(id),NS="http://www.w3.org/2000/svg";
 let H=24;try{H=+localStorage.getItem("h")||24}catch(e){}
@@ -398,16 +400,51 @@ async function cycles(){const d=await (await fetch("api/cycles?hours="+CH+"&limi
   `<div class="sub" style="margin-top:8px">${cs.length} cycle${cs.length>1?"s":""} · ${dur(total)} total</div>`;}
 $("cyrng").querySelectorAll("button").forEach(b=>{b.classList.toggle("act",+b.dataset.h===CH);b.onclick=()=>{CH=+b.dataset.h;
  try{localStorage.setItem("ch",CH)}catch(e){}$("cyrng").querySelectorAll("button").forEach(o=>o.classList.toggle("act",o===b));cycles()}});
-function all(){status().catch(()=>{});chart().catch(()=>{});bars().catch(()=>{});cycles().catch(()=>{})}
+const fmtKwh=v=>v==null?"–":(v>=1?v.toFixed(2)+" kWh":(v*1000).toFixed(0)+" Wh");
+const fmtW=v=>v==null?"–":v.toFixed(1)+" W";
+async function pwStatus(){
+ let d;try{d=await(await fetch("api/power/status")).json()}catch(e){return}
+ const devs=d.devices||[];if(!devs.length)return;
+ const wrap=$("pw-tiles");wrap.style.display="";wrap.innerHTML="";
+ devs.forEach(dev=>{
+  const stale=dev.ok===false,age=dev.age==null?"no data":dur(dev.age)+" ago";
+  wrap.innerHTML+=`<div class="tile"><div class="lab">${dev.name}</div>`+
+   `<div class="val${stale?" bad":""}">${fmtW(dev.power_w)}</div>`+
+   `<div class="sub">${fmtKwh(dev.total_kwh)} total</div>`+
+   `<div class="sub${stale?" stale":""}">${age}</div></div>`;});}
+async function pwCharts(){
+ let d;try{d=await(await fetch("api/power/daily?days=14")).json()}catch(e){return}
+ const devs=d.devices||[];if(!devs.length)return;
+ const wrap=$("pw-charts");wrap.style.display="";wrap.innerHTML="";
+ devs.forEach(dev=>{
+  const days=dev.days||[];
+  const svgId="pw-svg-"+dev.name.replace(/\W/g,"_");
+  wrap.innerHTML+=`<div class="row" style="margin-bottom:4px"><b>${dev.name} · daily usage</b></div>`+
+   `<svg id="${svgId}" height="160" role="img" aria-label="${dev.name} daily kWh"></svg>`;
+  const svg=document.getElementById(svgId);
+  const W=svg.clientWidth||900,Ht=160,L=42,R=8,T=8,B=22,n=days.length;
+  const mx=Math.max(0.1,...days.map(v=>v.kwh));
+  const top=mx<1?Math.ceil(mx*10)/10:Math.ceil(mx);
+  const bw=(W-L-R)/n,y=v=>T+(1-v/top)*(Ht-T-B);
+  const steps=top<1?[0,top/2,top]:[0,top/2,top].map(v=>Math.round(v*10)/10);
+  steps.forEach(h=>{el("line",{x1:L,x2:W-R,y1:y(h),y2:y(h),stroke:"var(--line)"},svg);
+   el("text",{x:L-5,y:y(h)+4,"text-anchor":"end"},svg).textContent=h<1?(h*1000|0)+"Wh":h.toFixed(1)});
+  days.forEach((v,i)=>{if(!v.kwh)return;
+   const r=el("rect",{x:L+i*bw+bw*.18,width:bw*.64,y:y(v.kwh),height:y(0)-y(v.kwh),fill:"var(--pw)"},svg);
+   el("title",{},r).textContent=`${v.day}: ${fmtKwh(v.kwh)}`;});
+  days.forEach((v,i)=>{if(bw>=34||(n-1-i)%2==0)el("text",{x:L+i*bw+bw/2,y:Ht-6,"text-anchor":"middle"},svg).textContent=+v.day.slice(8)+"."+(+v.day.slice(5,7))+"."});
+  if(n>0){wrap.innerHTML+=`<div style="height:14px"></div>`;}});
+ if(devs.length>1)wrap.style.borderBottom="";}
+function all(){status().catch(()=>{});chart().catch(()=>{});bars().catch(()=>{});cycles().catch(()=>{});pwStatus().catch(()=>{});pwCharts().catch(()=>{})}
 all();setInterval(all,60000);
-let rz;addEventListener("resize",()=>{clearTimeout(rz);rz=setTimeout(()=>{chart();bars()},200)});
+let rz;addEventListener("resize",()=>{clearTimeout(rz);rz=setTimeout(()=>{chart();bars();pwCharts()},200)});
 </script></body></html>"""
 
 
 MAX_BODY = 4096
 
 
-def _make_handler(store: StatsStore, controller=None):
+def _make_handler(store: StatsStore, controller=None, shelly=None):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, ctype):
             b = body.encode() if isinstance(body, str) else body
@@ -444,6 +481,14 @@ def _make_handler(store: StatsStore, controller=None):
                     data = store.cycles(
                         min(float(q.get("hours", ["48"])[0]), 24 * 60),
                         min(int(q.get("limit", ["100"])[0]), 500))
+                elif u.path == "/api/power/status":
+                    if shelly is None:
+                        return self._send(404, "not found", "text/plain")
+                    data = shelly.status()
+                elif u.path == "/api/power/daily":
+                    if shelly is None:
+                        return self._send(404, "not found", "text/plain")
+                    data = shelly.daily(max(1, min(int(q.get("days", ["14"])[0]), 366)))
                 else:
                     return self._send(404, "not found", "text/plain")
                 self._send(200, json.dumps(data), "application/json")
@@ -461,6 +506,25 @@ def _make_handler(store: StatsStore, controller=None):
         # in "Authorization: Bearer <token>" -- Cloudflare Access alone isn't
         # enough, because port 8080 is also reachable from the LAN.
         def do_POST(self):
+            u = urlparse(self.path)
+            if u.path == "/api/power/refresh":
+                if shelly is None:
+                    return self._send(404, json.dumps({"error": "not found"}), "application/json")
+                q = parse_qs(u.query)
+                name_list = q.get("name", [None])
+                name = name_list[0] if name_list else None
+                if name is None:
+                    # Try body
+                    length = int(self.headers.get("Content-Length") or 0)
+                    if 0 < length <= MAX_BODY:
+                        try:
+                            body = json.loads(self.rfile.read(length))
+                            name = body.get("name") if isinstance(body, dict) else None
+                        except Exception:
+                            pass
+                result = shelly.refresh(name)
+                return self._send(200 if "ok" in result else 400,
+                                  json.dumps(result), "application/json")
             self._control("POST")
 
         def do_DELETE(self):
@@ -523,8 +587,8 @@ def _make_handler(store: StatsStore, controller=None):
     return Handler
 
 
-def start_web(store: StatsStore, host: str = "0.0.0.0", port: int = 8080, controller=None):
-    srv = ThreadingHTTPServer((host, port), _make_handler(store, controller))
+def start_web(store: StatsStore, host: str = "0.0.0.0", port: int = 8080, controller=None, shelly=None):
+    srv = ThreadingHTTPServer((host, port), _make_handler(store, controller, shelly))
     threading.Thread(target=srv.serve_forever, name="eob-stats-web", daemon=True).start()
     logger.info("Stats dashboard on http://%s:%s/", host, port)
     return srv
@@ -537,7 +601,8 @@ def start_from_config(config: dict, client, schedule, controller=None):
     if not cfg.get("enabled", False):
         return None
     interval = int(cfg.get("poll_interval_seconds", 60))
-    store = StatsStore(cfg.get("db_file", "eob_stats.db"), schedule, interval)
+    db_path = cfg.get("db_file", "eob_stats.db")
+    store = StatsStore(db_path, schedule, interval)
     collector = StatsCollector(client, store, interval,
                                warn_after_misses=int(cfg.get("warn_after_misses", 3)))
     collector.start()
@@ -545,8 +610,19 @@ def start_from_config(config: dict, client, schedule, controller=None):
         # After a target change, read the status back a moment later so the
         # dashboard and app show the new target without waiting a full minute.
         controller.on_change = lambda: threading.Timer(3.0, collector.poll_once).start()
+    shelly = None
+    try:
+        from shelly import ShellyPoller
+        shelly = ShellyPoller.from_config(config, db_path, schedule.tz)
+        if shelly:
+            shelly.start()
+            logger.info("Shelly power meters: %d device(s) configured.",
+                        len(shelly._devices))
+    except Exception:
+        logger.exception("Failed to initialise Shelly power meters; continuing without.")
     web = cfg.get("web") or {}
     srv = None
     if web.get("enabled", True):
-        srv = start_web(store, web.get("host", "0.0.0.0"), int(web.get("port", 8080)), controller)
+        srv = start_web(store, web.get("host", "0.0.0.0"), int(web.get("port", 8080)),
+                        controller, shelly)
     return collector, srv

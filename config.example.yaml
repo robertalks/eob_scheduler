@@ -135,3 +135,16 @@ control:
   # TEMP_MIN_C/TEMP_MAX_C).
   # min_temperature: 10.0
   # max_temperature: 25.0
+
+# Shelly power meter integration (optional). If this block is absent or empty,
+# the feature is completely hidden -- no tiles, no charts, no API endpoints.
+# Each device is polled independently on its own `update` schedule.
+# Gen1 vs Gen2/3 is auto-detected at startup.
+#
+# power_meters:
+#   - name: Fridge
+#     address: 192.168.1.10   # IP or hostname of the Shelly device
+#     update: 30m             # poll interval: "30m", "60m", "1h", or bare seconds
+#   - name: Heater
+#     address: 192.168.1.11
+#     update: 60m
