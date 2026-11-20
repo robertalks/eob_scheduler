@@ -207,6 +207,8 @@ class ShellyStore:
               total_kwh REAL,
               PRIMARY KEY (ts, device)
             );
+            CREATE INDEX IF NOT EXISTS power_readings_device_ts
+              ON power_readings(device, ts);
         """)
 
     def add(self, ts: int, device: str, power_w: float, total_kwh: float) -> None:
@@ -308,6 +310,11 @@ class ShellyPoller:
         for m in meters:
             name = str(m["name"])
             address = str(m["address"])
+            if "://" in address or "/" in address or "@" in address:
+                raise ValueError(
+                    f"power_meters[{name!r}]: address must be a plain host or host:port, "
+                    f"got {address!r}"
+                )
             update_seconds = _parse_update_interval(m.get("update", "60m"))
             devices.append(ShellyDevice(name, address, update_seconds))
         return cls(devices, store, tz)

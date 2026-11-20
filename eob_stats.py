@@ -321,6 +321,7 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
  <div id="cywrap"></div></div>
 </main><script>
 const $=id=>document.getElementById(id),NS="http://www.w3.org/2000/svg";
+const esc=s=>{const d=document.createElement("div");d.textContent=s;return d.innerHTML};
 let H=24;try{H=+localStorage.getItem("h")||24}catch(e){}
 let CH=48;try{CH=+localStorage.getItem("ch")||48}catch(e){}
 const dayLabel=s=>{const d=new Date(s*1000),n=new Date();
@@ -408,7 +409,7 @@ async function pwStatus(){
  const wrap=$("pw-tiles");wrap.style.display="";wrap.innerHTML="";
  devs.forEach(dev=>{
   const stale=dev.ok===false,age=dev.age==null?"no data":dur(dev.age)+" ago";
-  wrap.innerHTML+=`<div class="tile"><div class="lab">${dev.name}</div>`+
+  wrap.innerHTML+=`<div class="tile"><div class="lab">${esc(dev.name)}</div>`+
    `<div class="val${stale?" bad":""}">${fmtKwh(dev.total_kwh)}</div>`+
    `<div class="sub">${fmtW(dev.power_w)} now</div>`+
    `<div class="sub${stale?" stale":""}">${age}</div></div>`;});}
@@ -421,7 +422,7 @@ async function pwCharts(){
   const svgId="pw-svg-"+dev.name.replace(/\W/g,"_");
   const totalKwh=days.reduce((s,v)=>s+v.kwh,0);
   const totStr=days.length?`last 14 days: ${fmtKwh(totalKwh)}`:"last 14 days: no data";
-  wrap.innerHTML+=`<div class="row" style="margin-bottom:4px"><b>${dev.name} · daily usage</b><span class="sub">${totStr}</span></div>`+
+  wrap.innerHTML+=`<div class="row" style="margin-bottom:4px"><b>${esc(dev.name)} · daily usage</b><span class="sub">${totStr}</span></div>`+
    `<svg id="${svgId}" height="200" role="img" aria-label="${dev.name} daily kWh"></svg>`;
   const svg=document.getElementById(svgId);
   const W=svg.clientWidth||900,Ht=200,L=42,R=8,T=8,B=22,n=days.length;
@@ -543,7 +544,7 @@ def _make_handler(store: StatsStore, controller=None, shelly=None):
             token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
             if not controller.check_token(token):
                 logger.warning("control: rejected request with a missing/wrong token from %s",
-                               self.headers.get("Cf-Connecting-Ip") or self.client_address[0])
+                               self.client_address[0])
                 return self._send(401, json.dumps({"error": "Wrong or missing control token."}),
                                   "application/json")
             try:
