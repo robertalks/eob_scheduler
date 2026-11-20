@@ -145,6 +145,7 @@ control:
 #   - name: Fridge
 #     address: 192.168.1.10   # IP or hostname of the Shelly device
 #     update: 30m             # poll interval: "30m", "60m", "1h", or bare seconds
+#     log_output: false       # set true to log each reading (default: true)
 #   - name: Heater
 #     address: 192.168.1.11
 #     update: 60m

@@ -52,10 +52,11 @@ class ShellyDevice:
                          GET /rpc/EMData.GetStatus?id=0 → total_act (Wh)
     """
 
-    def __init__(self, name: str, address: str, update_seconds: int):
+    def __init__(self, name: str, address: str, update_seconds: int, log_output: bool = True):
         self.name = name
         self.address = address
         self.update_seconds = update_seconds
+        self.log_output = log_output
         self._kind: str | None = None  # one of the family strings above
         self._lock = threading.Lock()
         self._last_reading: dict | None = None  # {"ts", "power_w", "total_kwh"}
@@ -147,8 +148,9 @@ class ShellyDevice:
                 store.add(ts, self.name, reading["power_w"], reading["total_kwh"])
                 with self._lock:
                     self._last_reading = {"ts": ts, **reading}
-                logger.info("shelly[%s]: %.1f W, %.3f kWh total", self.name,
-                            reading["power_w"], reading["total_kwh"])
+                if self.log_output:
+                    logger.info("shelly[%s]: %.1f W, %.3f kWh total", self.name,
+                                reading["power_w"], reading["total_kwh"])
             else:
                 logger.warning("shelly[%s]: poll returned no reading", self.name)
         except Exception:
@@ -316,7 +318,8 @@ class ShellyPoller:
                     f"got {address!r}"
                 )
             update_seconds = _parse_update_interval(m.get("update", "60m"))
-            devices.append(ShellyDevice(name, address, update_seconds))
+            log_output = bool(m.get("log_output", True))
+            devices.append(ShellyDevice(name, address, update_seconds, log_output))
         return cls(devices, store, tz)
 
     def start(self) -> None:

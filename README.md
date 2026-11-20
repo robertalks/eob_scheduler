@@ -170,6 +170,37 @@ cycles: `start`/`end`, `seconds`, `start_temp`/`end_temp`, `target`,
 keep it on your LAN, or set `stats.web.host: "127.0.0.1"`.
 `--dry-run` uses a simulated thermostat so you can preview the page.
 
+## Shelly power meters
+
+With a `power_meters:` section in `config.yaml`, the scheduler also polls
+one or more Shelly devices (Gen1 or Gen2/3 — switch/plug or energy monitor)
+and stores per-device power readings in the same SQLite database. The stats
+page gains:
+
+- small tiles showing each device's current power (W) and total energy (kWh)
+- a daily kWh bar chart per device (last 14 days)
+
+```yaml
+power_meters:
+  - name: Fridge
+    address: 192.168.1.10   # IP or hostname — no scheme, no path
+    update: 30m             # poll interval: "30m", "60m", "1h", or bare seconds
+    log_output: false       # set true to log each reading to stdout (default: true)
+  - name: Heater
+    address: 192.168.1.11
+    update: 60m
+```
+
+Additional JSON endpoints (return 404 when `power_meters` is not configured):
+
+- `GET /api/power/status` — per-device: `name`, `power_w`, `total_kwh`, `age`, `ok`
+- `GET /api/power/daily?days=N` — per-device daily kWh list
+- `POST /api/power/refresh` — body `{"name": "Fridge"}` or `{}` for all; no auth required
+
+Device type (Gen1/Gen2/3, switch vs energy monitor) is detected automatically
+on first poll. Counter resets are detected and skipped so they don't corrupt
+the daily totals.
+
 ### Status requests and missed readings
 
 Status requests go to the device at QoS 0 with no retain, so one sent during
