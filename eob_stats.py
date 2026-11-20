@@ -409,8 +409,8 @@ async function pwStatus(){
  devs.forEach(dev=>{
   const stale=dev.ok===false,age=dev.age==null?"no data":dur(dev.age)+" ago";
   wrap.innerHTML+=`<div class="tile"><div class="lab">${dev.name}</div>`+
-   `<div class="val${stale?" bad":""}">${fmtW(dev.power_w)}</div>`+
-   `<div class="sub">${fmtKwh(dev.total_kwh)} total</div>`+
+   `<div class="val${stale?" bad":""}">${fmtKwh(dev.total_kwh)}</div>`+
+   `<div class="sub">${fmtW(dev.power_w)} now</div>`+
    `<div class="sub${stale?" stale":""}">${age}</div></div>`;});}
 async function pwCharts(){
  let d;try{d=await(await fetch("api/power/daily?days=14")).json()}catch(e){return}
