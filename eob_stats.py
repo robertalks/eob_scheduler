@@ -315,10 +315,10 @@ svg{width:100%;display:block}svg text{fill:var(--mute);font-size:11px}
  <div class="legend"><span><i class="sw" style="background:var(--low)"></i>low tariff</span>
  <span><i class="sw" style="background:var(--high)"></i>high tariff</span>
  <span><i class="sw" style="background:var(--unk)"></i>tariff unknown</span></div></div>
+<div class="card" id="pw-charts" style="display:none"></div>
 <div class="card"><div class="row"><b>Recent heating</b>
  <div class="seg" id="cyrng"><button data-h="24">24 h</button><button data-h="48" class="act">48 h</button><button data-h="168">7 d</button><button data-h="720">30 d</button><button data-h="1440">60 d</button></div></div>
  <div id="cywrap"></div></div>
-<div class="card" id="pw-charts" style="display:none"></div>
 </main><script>
 const $=id=>document.getElementById(id),NS="http://www.w3.org/2000/svg";
 let H=24;try{H=+localStorage.getItem("h")||24}catch(e){}
