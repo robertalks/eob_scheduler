@@ -225,10 +225,14 @@ class ShellyStore:
         return rows[0] if rows else None
 
     def daily(self, device: str, days: int, tz, update_seconds: int,
-              now: datetime | None = None) -> list[dict]:
+              now: datetime | None = None,
+              current_kwh: float | None = None,
+              current_ts: int | None = None) -> list[dict]:
         """Delta-based daily kWh for the last `days` days.
         Counter resets (total decreasing) are skipped, not subtracted.
-        `now` overrides the clock (for tests)."""
+        `now` overrides the clock (for tests).
+        `current_kwh`/`current_ts` close the final open interval so the most
+        recent energy (not yet followed by another logged row) is included."""
         base = (now or datetime.now(tz)).astimezone(tz)
         today = base.replace(hour=0, minute=0, second=0, microsecond=0)
         start = today - timedelta(days=days - 1)
@@ -252,6 +256,14 @@ class ShellyStore:
             day_key = datetime.fromtimestamp(t0, tz).strftime("%Y-%m-%d")
             if day_key in out:
                 out[day_key] += delta
+
+        # Close the final open interval using the live reading if available.
+        if rows and current_kwh is not None and current_ts is not None:
+            last_ts, last_kwh = rows[-1]
+            if current_kwh > last_kwh and current_ts > last_ts:
+                day_key = datetime.fromtimestamp(last_ts, tz).strftime("%Y-%m-%d")
+                if day_key in out:
+                    out[day_key] += current_kwh - last_kwh
 
         return [{"day": k, "kwh": round(v, 4)} for k, v in out.items()]
 
@@ -336,6 +348,11 @@ class ShellyPoller:
     def daily(self, days: int) -> dict:
         result = []
         for dev in self._devices:
-            days_data = self._store.daily(dev.name, days, self._tz, dev.update_seconds, now=None)
+            last = dev.last_reading()
+            days_data = self._store.daily(
+                dev.name, days, self._tz, dev.update_seconds, now=None,
+                current_kwh=last["total_kwh"] if last else None,
+                current_ts=last["ts"] if last else None,
+            )
             result.append({"name": dev.name, "days": days_data})
         return {"devices": result}
