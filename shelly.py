@@ -42,59 +42,100 @@ def _fetch_json(url: str) -> dict:
 
 
 class ShellyDevice:
-    """Tracks one configured Shelly device: gen detection, polling, storage."""
+    """Tracks one configured Shelly device: gen detection, polling, storage.
+
+    Supported device families (auto-detected at first poll):
+      "gen1_switch"  — Gen1 plug/switch: GET /status → meters[0].{power, total}
+      "gen2_switch"  — Gen2/3 plug/switch: GET /rpc/Switch.GetStatus?id=0 → {apower, aenergy}
+      "gen2_em"      — Gen2/3 energy monitor (e.g. Pro 3EM):
+                         GET /rpc/EM.GetStatus?id=0     → total_act_power (W)
+                         GET /rpc/EMData.GetStatus?id=0 → total_act (Wh)
+    """
 
     def __init__(self, name: str, address: str, update_seconds: int):
         self.name = name
         self.address = address
         self.update_seconds = update_seconds
-        self.gen: int | None = None  # 1 or 2, detected on first poll
+        self._kind: str | None = None  # one of the family strings above
         self._lock = threading.Lock()
         self._last_reading: dict | None = None  # {"ts", "power_w", "total_kwh"}
         self._timer: threading.Timer | None = None
         self._stopped = False
 
-    def _detect_and_read(self) -> dict | None:
-        """Auto-detect gen on first call, then read current state.
-        Returns {"power_w": float, "total_kwh": float} or None on failure."""
+    def _detect(self) -> str | None:
+        """Probe the device and return its family string, or None on failure."""
         base = f"http://{self.address}"
 
-        if self.gen is None:
-            # Try Gen2/3 first; a real Gen1 returns 404 for /rpc/
+        # --- Gen2/3: /rpc/ namespace is present ---
+        try:
+            _fetch_json(f"{base}/rpc/Shelly.GetDeviceInfo")
+            # It's Gen2/3. Now distinguish switch vs energy monitor.
             try:
                 data = _fetch_json(f"{base}/rpc/Switch.GetStatus?id=0")
-                if "apower" in data:
-                    self.gen = 2
-                    logger.info("shelly[%s]: detected Gen2/3", self.name)
+                if "apower" in data or "aenergy" in data:
+                    logger.info("shelly[%s]: detected Gen2/3 switch/plug", self.name)
+                    return "gen2_switch"
             except Exception:
                 pass
-
-        if self.gen is None:
             try:
-                data = _fetch_json(f"{base}/status")
-                if "meters" in data:
-                    self.gen = 1
-                    logger.info("shelly[%s]: detected Gen1", self.name)
+                data = _fetch_json(f"{base}/rpc/EM.GetStatus?id=0")
+                if "total_act_power" in data:
+                    logger.info("shelly[%s]: detected Gen2/3 energy monitor (EM)", self.name)
+                    return "gen2_em"
             except Exception:
                 pass
+            logger.warning("shelly[%s]: Gen2/3 device at %s but no recognised power endpoint "
+                           "(tried Switch.GetStatus and EM.GetStatus)", self.name, self.address)
+            return None
+        except Exception as exc:
+            logger.debug("shelly[%s]: not Gen2/3 (%s), trying Gen1", self.name, exc)
 
-        if self.gen is None:
-            logger.warning("shelly[%s]: could not detect device gen at %s", self.name, self.address)
+        # --- Gen1: /status with meters ---
+        try:
+            data = _fetch_json(f"{base}/status")
+            if "meters" in data:
+                logger.info("shelly[%s]: detected Gen1 switch/plug", self.name)
+                return "gen1_switch"
+            logger.debug("shelly[%s]: /status responded but no meters key — keys: %s",
+                         self.name, list(data.keys()))
+        except Exception as exc:
+            logger.debug("shelly[%s]: Gen1 probe failed: %s", self.name, exc)
+
+        logger.warning("shelly[%s]: could not detect device type at %s — "
+                       "check the address and that the device is reachable.",
+                       self.name, self.address)
+        return None
+
+    def _detect_and_read(self) -> dict | None:
+        """Auto-detect device family on first call, then read current state.
+        Returns {"power_w": float, "total_kwh": float} or None on failure."""
+        if self._kind is None:
+            self._kind = self._detect()
+        if self._kind is None:
             return None
 
+        base = f"http://{self.address}"
         try:
-            if self.gen == 2:
+            if self._kind == "gen2_switch":
                 data = _fetch_json(f"{base}/rpc/Switch.GetStatus?id=0")
                 power_w = float(data.get("apower") or 0.0)
                 total_kwh = float((data.get("aenergy") or {}).get("total") or 0.0) / 1000.0
-            else:
+            elif self._kind == "gen2_em":
+                em = _fetch_json(f"{base}/rpc/EM.GetStatus?id=0")
+                emd = _fetch_json(f"{base}/rpc/EMData.GetStatus?id=0")
+                power_w = float(em.get("total_act_power") or 0.0)
+                total_kwh = float(emd.get("total_act") or 0.0) / 1000.0
+            else:  # gen1_switch
                 data = _fetch_json(f"{base}/status")
                 meters = data.get("meters") or [{}]
                 power_w = float(meters[0].get("power") or 0.0)
+                # Gen1 total is in Watt-minutes
                 total_kwh = float(meters[0].get("total") or 0.0) / 60.0 / 1000.0
             return {"power_w": power_w, "total_kwh": total_kwh}
         except Exception as exc:
             logger.warning("shelly[%s]: read failed: %s", self.name, exc)
+            # Reset kind so the next poll re-detects (handles firmware reboots).
+            self._kind = None
             return None
 
     def poll(self, store: "ShellyStore") -> None:
