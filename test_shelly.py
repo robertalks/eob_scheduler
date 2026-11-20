@@ -14,7 +14,8 @@ def test_parse_update_interval():
 
 
 def test_shelly_store_daily_delta(tmp_path):
-    """Counter reset mid-day must be skipped, not subtracted."""
+    """Counter reset mid-day must be skipped, not subtracted.
+    The first reading's value is counted from 0 (no prior row = device started at 0)."""
     tz = ZoneInfo("Europe/Prague")
     store = ShellyStore(str(tmp_path / "s.db"))
     update_s = 60
@@ -35,7 +36,8 @@ def test_shelly_store_daily_delta(tmp_path):
     now = datetime(2026, 11, 10, 12, 0, tzinfo=tz)
     result = store.daily("dev", 1, tz, update_s, now=now)
     assert len(result) == 1
-    assert abs(result[0]["kwh"] - 1.8) < 0.001
+    # 0.5 (first reading from 0) + 0.5 + 0.8 + 0.5 (reset skipped) = 2.3
+    assert abs(result[0]["kwh"] - 2.3) < 0.001
 
 
 def test_shelly_store_daily_14_days(tmp_path):
@@ -57,8 +59,8 @@ def test_shelly_store_daily_14_days(tmp_path):
     result = store.daily("dev", 14, tz, update_s, now=now)
     assert len(result) == 14
     total_kwh = sum(e["kwh"] for e in result)
-    # 14 days × 24 h × 0.1 kWh/h = 33.6, minus the first delta (no prior reading)
-    assert abs(total_kwh - 33.5) < 0.1
+    # 14 days × 24 h × 0.1 kWh/h = 33.6 (first reading counted from 0)
+    assert abs(total_kwh - 33.6) < 0.01
 
 
 def test_shelly_poller_from_config_none():

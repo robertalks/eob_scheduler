@@ -243,6 +243,18 @@ class ShellyStore:
             rows = self._db.execute(
                 "SELECT ts, total_kwh FROM power_readings "
                 "WHERE device=? AND ts>=? ORDER BY ts", (device, since)).fetchall()
+            # One row just before the window: used as baseline so the first
+            # stored reading's value isn't silently lost.
+            prior = self._db.execute(
+                "SELECT ts, total_kwh FROM power_readings "
+                "WHERE device=? AND ts<? ORDER BY ts DESC LIMIT 1",
+                (device, since)).fetchone()
+
+        # Prepend the prior row (or a synthetic zero baseline if none exists)
+        # so the very first in-window reading contributes its delta too.
+        if rows:
+            baseline = prior if prior else (rows[0][0], 0.0)
+            rows = [baseline] + list(rows)
 
         out = {}
         for d in range(days):
