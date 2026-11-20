@@ -419,10 +419,13 @@ async function pwCharts(){
  devs.forEach(dev=>{
   const days=dev.days||[];
   const svgId="pw-svg-"+dev.name.replace(/\W/g,"_");
+  const totalKwh=days.reduce((s,v)=>s+v.kwh,0);
+  const totStr=days.length?`last 14 days: ${fmtKwh(totalKwh)}`:"last 14 days: no data";
   wrap.innerHTML+=`<div class="row" style="margin-bottom:4px"><b>${dev.name} · daily usage</b></div>`+
-   `<svg id="${svgId}" height="160" role="img" aria-label="${dev.name} daily kWh"></svg>`;
+   `<div class="sub" style="margin-bottom:6px">${totStr}</div>`+
+   `<svg id="${svgId}" height="200" role="img" aria-label="${dev.name} daily kWh"></svg>`;
   const svg=document.getElementById(svgId);
-  const W=svg.clientWidth||900,Ht=160,L=42,R=8,T=8,B=22,n=days.length;
+  const W=svg.clientWidth||900,Ht=200,L=42,R=8,T=8,B=22,n=days.length;
   const mx=Math.max(0.1,...days.map(v=>v.kwh));
   const top=mx<1?Math.ceil(mx*10)/10:Math.ceil(mx);
   const bw=(W-L-R)/n,y=v=>T+(1-v/top)*(Ht-T-B);
