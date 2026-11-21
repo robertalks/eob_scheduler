@@ -254,13 +254,19 @@ class ShellyStore:
                 "SELECT ts, total_kwh FROM power_readings "
                 "WHERE device=? AND ts<? ORDER BY ts DESC LIMIT 1",
                 (device, earliest)).fetchone()
+            # Check if prior is itself the very first reading ever for this device.
+            # If so, its counter value was accumulated before we started logging,
+            # so we must treat it as starting from 0 (new device, no history before first poll).
+            if prior:
+                has_before_prior = self._db.execute(
+                    "SELECT 1 FROM power_readings WHERE device=? AND ts<? LIMIT 1",
+                    (device, prior[0])).fetchone()
+                if not has_before_prior:
+                    prior = (prior[0] - 1, 0.0)
 
         if not rows:
             return 0.0
 
-        # When there's no prior row, treat the counter as starting from 0 at
-        # the start of the query window — the device was just installed so all
-        # energy since the first reading is real consumption we want to count.
         if prior:
             all_rows = [prior] + list(rows)
         else:
@@ -272,14 +278,12 @@ class ShellyStore:
             # Check if [t0, t1] overlaps any interval
             for iv_start, iv_end in intervals:
                 if t0 < iv_end and t1 > iv_start:
-                    # Proportionally attribute the overlapping fraction
                     span = t1 - t0
                     if span <= 0:
                         continue
                     overlap = min(t1, iv_end) - max(t0, iv_start)
                     fraction = overlap / span
                     total_wh += (kwh1 - kwh0) * 1000.0 * fraction
-                    break  # count this delta only once even if it spans multiple intervals
         return total_wh
 
     def daily(self, device: str, days: int, tz, update_seconds: int,

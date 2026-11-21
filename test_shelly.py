@@ -188,6 +188,30 @@ def test_energy_wh_in_intervals_no_prior_row(tmp_path):
     assert abs(result - 21800.0) < 1.0
 
 
+def test_energy_wh_in_intervals_first_reading_is_prior(tmp_path):
+    """First-ever reading falls before the query window (prior row), but has no
+    row before it — its counter value should be treated as starting from 0."""
+    tz = ZoneInfo("Europe/Prague")
+    store = ShellyStore(str(tmp_path / "s.db"))
+
+    def at(day, h, m=0):
+        return int(datetime(2026, 11, day, h, m, tzinfo=tz).timestamp())
+
+    # Device first seen on Nov 20 at 14:00 with counter already at 21.39 kWh
+    # (accumulated since installation, before first poll)
+    store.add(at(20, 14), "dev", 2000.0, 21.39)   # first ever reading
+    store.add(at(20, 15), "dev", 2000.0, 21.42)   # +0.03 kWh = 30 Wh
+    store.add(at(21, 10), "dev", 2000.0, 21.69)   # +0.27 kWh = 270 Wh
+
+    # Heater on all of Nov 20 and Nov 21
+    intervals = [(at(20, 0), at(20, 23, 59)), (at(21, 0), at(21, 23, 59))]
+    result = store.energy_wh_in_intervals("dev", intervals)
+    # 0→21.39 baseline delta: fully within Nov 20 interval = 21390 Wh
+    # at(20,14)→at(20,15): 30 Wh, fully within Nov 20 interval
+    # at(20,15)→at(21,10): 270 Wh, spans both intervals — full delta counted across both
+    assert abs(result - (21390.0 + 30.0 + 270.0)) < 1.0
+
+
 
     store = ShellyStore(str(tmp_path / "s.db"))
     assert store.energy_wh_in_intervals("dev", []) == 0.0

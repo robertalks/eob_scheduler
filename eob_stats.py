@@ -105,7 +105,10 @@ class StatsStore:
         return {"since": since, "interval": self.interval, "rows": [list(r) for r in rows]}
 
     def daily(self, days: int, now: datetime | None = None,
-              shelly_store=None, heater_device: str | None = None) -> list:
+              shelly_store=None, heater_device: str | None = None,
+              heater_update_s: int = 3600,
+              heater_current_kwh: float | None = None,
+              heater_current_ts: int | None = None) -> list:
         """Heater-on minutes per local day, split by tariff. Each reading
         counts until the next one, capped at 3 poll intervals so gaps
         (scheduler down, broker unreachable) don't count as heating.
@@ -140,27 +143,11 @@ class StatsStore:
                   for d in out.values()]
 
         if shelly_store is not None and heater_device:
-            # Build heater-on intervals from readings (same cap logic as above)
-            intervals_by_day: dict[str, list[tuple[int, int]]] = {r["day"]: [] for r in result}
-            cap = 3 * self.interval
-            for (t0, rel, _), (t1, _, _) in zip(rows, rows[1:]):
-                if not rel:
-                    continue
-                t1 = min(t1, t0 + cap)
-                seg_start = t0
-                while seg_start < t1:
-                    day_key = datetime.fromtimestamp(seg_start, self.tz).strftime("%Y-%m-%d")
-                    midnight = (datetime.fromtimestamp(seg_start, self.tz)
-                                .replace(hour=0, minute=0, second=0, microsecond=0)
-                                + timedelta(days=1))
-                    seg_end = min(t1, int(midnight.timestamp()))
-                    if day_key in intervals_by_day:
-                        intervals_by_day[day_key].append((seg_start, seg_end))
-                    seg_start = seg_end
-            energy_by_day = {}
-            for day_key, ivs in intervals_by_day.items():
-                energy_by_day[day_key] = round(
-                    shelly_store.energy_wh_in_intervals(heater_device, ivs))
+            shelly_days = shelly_store.daily(heater_device, days, self.tz,
+                                             update_seconds=heater_update_s, now=now,
+                                             current_kwh=heater_current_kwh,
+                                             current_ts=heater_current_ts)
+            energy_by_day = {e["day"]: round(e["kwh"] * 1000) for e in shelly_days}
             for r in result:
                 r["energy_wh"] = energy_by_day.get(r["day"], 0)
 
@@ -510,9 +497,24 @@ def _make_handler(store: StatsStore, controller=None, shelly=None, heater_device
                 elif u.path == "/api/history":
                     data = store.history(min(float(q.get("hours", ["24"])[0]), 24 * 60))
                 elif u.path == "/api/daily":
-                    shelly_store = shelly._store if (shelly is not None and heater_device) else None
+                    shelly_store = None
+                    heater_update_s = 3600
+                    heater_current_kwh = None
+                    heater_current_ts = None
+                    if shelly is not None and heater_device:
+                        shelly_store = shelly._store
+                        dev = next((d for d in shelly._devices if d.name == heater_device), None)
+                        if dev:
+                            heater_update_s = dev.update_seconds
+                            last = dev.last_reading()
+                            if last:
+                                heater_current_kwh = last["total_kwh"]
+                                heater_current_ts = last["ts"]
                     data = store.daily(max(1, min(int(q.get("days", ["14"])[0]), 366)),
-                                       shelly_store=shelly_store, heater_device=heater_device)
+                                       shelly_store=shelly_store, heater_device=heater_device,
+                                       heater_update_s=heater_update_s,
+                                       heater_current_kwh=heater_current_kwh,
+                                       heater_current_ts=heater_current_ts)
                 elif u.path == "/api/cycles":
                     data = store.cycles(
                         min(float(q.get("hours", ["48"])[0]), 24 * 60),
