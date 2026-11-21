@@ -167,7 +167,28 @@ def test_energy_wh_in_intervals_partial(tmp_path):
     assert abs(result - 1000.0) < 1.0
 
 
-def test_energy_wh_in_intervals_empty(tmp_path):
+def test_energy_wh_in_intervals_no_prior_row(tmp_path):
+    """Newly installed device: first reading already has a large counter value.
+    All energy from that first reading onward should be counted."""
+    tz = ZoneInfo("Europe/Prague")
+    store = ShellyStore(str(tmp_path / "s.db"))
+
+    def at(h, m=0):
+        return int(datetime(2026, 11, 10, h, m, tzinfo=tz).timestamp())
+
+    # Device installed mid-day, counter already at 21.39 kWh from factory use
+    store.add(at(8), "dev", 2000.0, 21.39)
+    store.add(at(9), "dev", 2000.0, 21.60)   # +0.21 kWh = 210 Wh
+    store.add(at(10), "dev", 2000.0, 21.80)  # +0.20 kWh = 200 Wh
+
+    # Heater on the whole day 00:00–24:00
+    intervals = [(at(0), at(23, 59))]
+    result = store.energy_wh_in_intervals("dev", intervals)
+    # Should count from 0 → 21.80 kWh = 21800 Wh (first reading baseline = 0)
+    assert abs(result - 21800.0) < 1.0
+
+
+
     store = ShellyStore(str(tmp_path / "s.db"))
     assert store.energy_wh_in_intervals("dev", []) == 0.0
     # No readings

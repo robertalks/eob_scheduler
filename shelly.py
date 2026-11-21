@@ -258,7 +258,13 @@ class ShellyStore:
         if not rows:
             return 0.0
 
-        all_rows = ([prior] if prior else []) + list(rows)
+        # When there's no prior row, treat the counter as starting from 0 at
+        # the start of the query window — the device was just installed so all
+        # energy since the first reading is real consumption we want to count.
+        if prior:
+            all_rows = [prior] + list(rows)
+        else:
+            all_rows = [(earliest - 1, 0.0)] + list(rows)
         total_wh = 0.0
         for (t0, kwh0), (t1, kwh1) in zip(all_rows, all_rows[1:]):
             if kwh1 <= kwh0:
