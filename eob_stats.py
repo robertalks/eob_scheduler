@@ -104,7 +104,8 @@ class StatsStore:
                            "WHERE ts>=? ORDER BY ts", (since,))
         return {"since": since, "interval": self.interval, "rows": [list(r) for r in rows]}
 
-    def daily(self, days: int, now: datetime | None = None) -> list:
+    def daily(self, days: int, now: datetime | None = None,
+              shelly_store=None, heater_device: str | None = None) -> list:
         """Heater-on minutes per local day, split by tariff. Each reading
         counts until the next one, capped at 3 poll intervals so gaps
         (scheduler down, broker unreachable) don't count as heating.
@@ -135,8 +136,35 @@ class StatsStore:
                 if k in out:
                     out[k]["unknown" if low is None else ("low" if low else "high")] += seg / 60
                 t0 += seg
-        return [{k: (round(v) if isinstance(v, float) else v) for k, v in d.items()}
-                for d in out.values()]
+        result = [{k: (round(v) if isinstance(v, float) else v) for k, v in d.items()}
+                  for d in out.values()]
+
+        if shelly_store is not None and heater_device:
+            # Build heater-on intervals from readings (same cap logic as above)
+            intervals_by_day: dict[str, list[tuple[int, int]]] = {r["day"]: [] for r in result}
+            cap = 3 * self.interval
+            for (t0, rel, _), (t1, _, _) in zip(rows, rows[1:]):
+                if not rel:
+                    continue
+                t1 = min(t1, t0 + cap)
+                seg_start = t0
+                while seg_start < t1:
+                    day_key = datetime.fromtimestamp(seg_start, self.tz).strftime("%Y-%m-%d")
+                    midnight = (datetime.fromtimestamp(seg_start, self.tz)
+                                .replace(hour=0, minute=0, second=0, microsecond=0)
+                                + timedelta(days=1))
+                    seg_end = min(t1, int(midnight.timestamp()))
+                    if day_key in intervals_by_day:
+                        intervals_by_day[day_key].append((seg_start, seg_end))
+                    seg_start = seg_end
+            energy_by_day = {}
+            for day_key, ivs in intervals_by_day.items():
+                energy_by_day[day_key] = round(
+                    shelly_store.energy_wh_in_intervals(heater_device, ivs))
+            for r in result:
+                r["energy_wh"] = energy_by_day.get(r["day"], 0)
+
+        return result
 
     def cycles(self, hours: float, limit: int = 100) -> dict:
         """Reconstruct individual heating cycles (one relay ON->OFF run) from
@@ -376,12 +404,15 @@ async function bars(){const d=await (await fetch("api/daily?days=14")).json(),sv
  const top=Math.ceil(mx/60)*60,bw=(W-L-R)/n,y=v=>T+(1-v/top)*(Ht-T-B);
  for(let h=0;h<=top/60;h+=Math.max(1,Math.ceil(top/60/4))){el("line",{x1:L,x2:W-R,y1:y(h*60),y2:y(h*60),stroke:"var(--line)"},svg);
    el("text",{x:L-5,y:y(h*60)+4,"text-anchor":"end"},svg).textContent=h+"h"}
- let tl=0,th=0;d.forEach((v,i)=>{let base=0;tl+=v.low;th+=v.high;
+ const fmtEn=wh=>wh==null||wh===0?"":wh>=1000?(wh/1000).toFixed(2)+" kWh":wh+" Wh";
+ let tl=0,th=0,te=0;d.forEach((v,i)=>{let base=0;tl+=v.low;th+=v.high;if(v.energy_wh!=null)te+=v.energy_wh;
   [["low","var(--low)"],["high","var(--high)"],["unknown","var(--unk)"]].forEach(([k,c])=>{if(!v[k])return;
    const r=el("rect",{x:L+i*bw+bw*.18,width:bw*.64,y:y(base+v[k]),height:y(base)-y(base+v[k]),fill:c},svg);
-   el("title",{},r).textContent=`${v.day}: ${dur(v[k]*60)} in ${k==="unknown"?"unknown":k} tariff`;base+=v[k]});
+   const en=fmtEn(v.energy_wh);
+   el("title",{},r).textContent=`${v.day}: ${dur(v[k]*60)} in ${k==="unknown"?"unknown":k} tariff`+(en?` · ${en}`:"");base+=v[k]});
   if(bw>=34||(n-1-i)%2==0)el("text",{x:L+i*bw+bw/2,y:Ht-6,"text-anchor":"middle"},svg).textContent=+v.day.slice(8)+"."+(+v.day.slice(5,7))+"."});
- $("tot").textContent=`last 14 days: ${dur((tl+th)*60)}`+(tl+th?`, ${Math.round(100*tl/((tl+th)||1))}% in low tariff`:"")}
+ const enStr=te>0?" · "+fmtEn(te):"";
+ $("tot").textContent=`last 14 days: ${dur((tl+th)*60)}`+(tl+th?`, ${Math.round(100*tl/((tl+th)||1))}% in low tariff`:"")+enStr}
 $("rng").querySelectorAll("button").forEach(b=>{b.classList.toggle("act",+b.dataset.h===H);b.onclick=()=>{H=+b.dataset.h;
  try{localStorage.setItem("h",H)}catch(e){}$("rng").querySelectorAll("button").forEach(o=>o.classList.toggle("act",o===b));chart()}});
 async function cycles(){const d=await (await fetch("api/cycles?hours="+CH+"&limit=100")).json();
@@ -447,7 +478,7 @@ let rz;addEventListener("resize",()=>{clearTimeout(rz);rz=setTimeout(()=>{chart(
 MAX_BODY = 4096
 
 
-def _make_handler(store: StatsStore, controller=None, shelly=None):
+def _make_handler(store: StatsStore, controller=None, shelly=None, heater_device: str | None = None):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code, body, ctype):
             b = body.encode() if isinstance(body, str) else body
@@ -479,7 +510,9 @@ def _make_handler(store: StatsStore, controller=None, shelly=None):
                 elif u.path == "/api/history":
                     data = store.history(min(float(q.get("hours", ["24"])[0]), 24 * 60))
                 elif u.path == "/api/daily":
-                    data = store.daily(max(1, min(int(q.get("days", ["14"])[0]), 366)))
+                    shelly_store = shelly._store if (shelly is not None and heater_device) else None
+                    data = store.daily(max(1, min(int(q.get("days", ["14"])[0]), 366)),
+                                       shelly_store=shelly_store, heater_device=heater_device)
                 elif u.path == "/api/cycles":
                     data = store.cycles(
                         min(float(q.get("hours", ["48"])[0]), 24 * 60),
@@ -590,8 +623,10 @@ def _make_handler(store: StatsStore, controller=None, shelly=None):
     return Handler
 
 
-def start_web(store: StatsStore, host: str = "0.0.0.0", port: int = 8080, controller=None, shelly=None):
-    srv = ThreadingHTTPServer((host, port), _make_handler(store, controller, shelly))
+def start_web(store: StatsStore, host: str = "0.0.0.0", port: int = 8080, controller=None,
+              shelly=None, heater_device: str | None = None):
+    srv = ThreadingHTTPServer((host, port),
+                              _make_handler(store, controller, shelly, heater_device))
     threading.Thread(target=srv.serve_forever, name="eob-stats-web", daemon=True).start()
     logger.info("Stats dashboard on http://%s:%s/", host, port)
     return srv
@@ -614,11 +649,21 @@ def start_from_config(config: dict, client, schedule, controller=None):
         # dashboard and app show the new target without waiting a full minute.
         controller.on_change = lambda: threading.Timer(3.0, collector.poll_once).start()
     shelly = None
+    heater_device = None
     try:
         from shelly import ShellyPoller
         shelly = ShellyPoller.from_config(config, db_path, schedule.tz)
         if shelly:
             shelly.start()
+            heater_device = cfg.get("heater_device") or None
+            # Validate that the named device actually exists in config
+            if heater_device:
+                known = {d.name for d in shelly._devices}
+                if heater_device not in known:
+                    logger.warning("stats.heater_device %r not found in power_meters "
+                                   "(known: %s) — energy linking disabled.",
+                                   heater_device, ", ".join(sorted(known)))
+                    heater_device = None
             logger.info("Shelly power meters: %d device(s) configured.",
                         len(shelly._devices))
     except Exception:
@@ -627,5 +672,5 @@ def start_from_config(config: dict, client, schedule, controller=None):
     srv = None
     if web.get("enabled", True):
         srv = start_web(store, web.get("host", "0.0.0.0"), int(web.get("port", 8080)),
-                        controller, shelly)
+                        controller, shelly, heater_device)
     return collector, srv

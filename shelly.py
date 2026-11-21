@@ -228,6 +228,54 @@ class ShellyStore:
                 "WHERE device=? ORDER BY ts DESC LIMIT 1", (device,)).fetchall()
         return rows[0] if rows else None
 
+    def energy_wh_in_intervals(self, device: str, intervals: list[tuple[int, int]]) -> float:
+        """Sum kWh consumed during the given (start_ts, end_ts) intervals.
+
+        Uses the stored total_kwh counter deltas. Only counter increases that
+        fall entirely or partly within any interval are counted.  Each delta
+        from reading pair (t0, kwh0) → (t1, kwh1) is included if the interval
+        [t0, t1] overlaps any of the given intervals.  Counter resets are skipped.
+
+        Returns total energy in Wh (float).
+        """
+        if not intervals:
+            return 0.0
+        # Find the time range to query
+        earliest = min(s for s, _ in intervals)
+        latest = max(e for _, e in intervals)
+
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT ts, total_kwh FROM power_readings "
+                "WHERE device=? AND ts>=? AND ts<=? ORDER BY ts",
+                (device, earliest, latest + 86400)).fetchall()
+            # Include one row before the range to establish a baseline
+            prior = self._db.execute(
+                "SELECT ts, total_kwh FROM power_readings "
+                "WHERE device=? AND ts<? ORDER BY ts DESC LIMIT 1",
+                (device, earliest)).fetchone()
+
+        if not rows:
+            return 0.0
+
+        all_rows = ([prior] if prior else []) + list(rows)
+        total_wh = 0.0
+        for (t0, kwh0), (t1, kwh1) in zip(all_rows, all_rows[1:]):
+            if kwh1 <= kwh0:
+                continue  # counter reset: skip
+            # Check if [t0, t1] overlaps any interval
+            for iv_start, iv_end in intervals:
+                if t0 < iv_end and t1 > iv_start:
+                    # Proportionally attribute the overlapping fraction
+                    span = t1 - t0
+                    if span <= 0:
+                        continue
+                    overlap = min(t1, iv_end) - max(t0, iv_start)
+                    fraction = overlap / span
+                    total_wh += (kwh1 - kwh0) * 1000.0 * fraction
+                    break  # count this delta only once even if it spans multiple intervals
+        return total_wh
+
     def daily(self, device: str, days: int, tz, update_seconds: int,
               now: datetime | None = None,
               current_kwh: float | None = None,

@@ -110,6 +110,10 @@ stats:
   # A single missed poll is routine and logged at DEBUG; only warn once the
   # thermostat has been silent for this many polls in a row.
   warn_after_misses: 3
+  # Optional: name of the power_meters device that measures the heater circuit.
+  # When set, /api/daily includes energy_wh per day (kWh used during heater-on
+  # intervals, derived from that device's logged readings).
+  # heater_device: "Heater"
   web:
     enabled: true
     host: "0.0.0.0"            # "127.0.0.1" to keep it local-only

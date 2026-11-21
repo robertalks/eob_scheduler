@@ -124,3 +124,51 @@ def test_shelly_poller_from_config(tmp_path):
     assert fridge.update_seconds == 1800
     assert heater.name == "Heater"
     assert heater.update_seconds == 3600
+
+
+def test_energy_wh_in_intervals(tmp_path):
+    """energy_wh_in_intervals sums deltas proportionally within given intervals."""
+    tz = ZoneInfo("Europe/Prague")
+    store = ShellyStore(str(tmp_path / "s.db"))
+
+    def at(h, m=0):
+        return int(datetime(2026, 11, 10, h, m, tzinfo=tz).timestamp())
+
+    # 1 kWh per hour rate; readings every 30 min
+    store.add(at(0), "dev", 2000.0, 0.0)
+    store.add(at(0, 30), "dev", 2000.0, 0.5)   # +0.5 kWh = 500 Wh
+    store.add(at(1), "dev", 2000.0, 1.0)        # +0.5 kWh = 500 Wh
+    store.add(at(1, 30), "dev", 2000.0, 1.5)    # +0.5 kWh = 500 Wh
+    store.add(at(2), "dev", 2000.0, 2.0)        # +0.5 kWh = 500 Wh
+
+    # Heater was on from 00:30 to 01:30 (3600s)
+    intervals = [(at(0, 30), at(1, 30))]
+    result = store.energy_wh_in_intervals("dev", intervals)
+    # Should capture the two full 30-min deltas fully inside the interval = 1000 Wh
+    assert abs(result - 1000.0) < 1.0
+
+
+def test_energy_wh_in_intervals_partial(tmp_path):
+    """Partial overlap: a delta straddling an interval boundary is proportioned."""
+    tz = ZoneInfo("Europe/Prague")
+    store = ShellyStore(str(tmp_path / "s.db"))
+
+    def at(h, m=0):
+        return int(datetime(2026, 11, 10, h, m, tzinfo=tz).timestamp())
+
+    # One delta: 00:00 → 02:00, 2 kWh = 2000 Wh
+    store.add(at(0), "dev", 1000.0, 0.0)
+    store.add(at(2), "dev", 1000.0, 2.0)
+
+    # Interval covers exactly the first half: 00:00 → 01:00
+    intervals = [(at(0), at(1))]
+    result = store.energy_wh_in_intervals("dev", intervals)
+    # Overlap = 3600s out of 7200s span → 50% → 1000 Wh
+    assert abs(result - 1000.0) < 1.0
+
+
+def test_energy_wh_in_intervals_empty(tmp_path):
+    store = ShellyStore(str(tmp_path / "s.db"))
+    assert store.energy_wh_in_intervals("dev", []) == 0.0
+    # No readings
+    assert store.energy_wh_in_intervals("dev", [(1000, 2000)]) == 0.0
