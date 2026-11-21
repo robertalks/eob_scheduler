@@ -8,7 +8,7 @@ timezone: "Europe/Prague"
 # These are your actual confirmed D45d windows (given 2026-09-13), converted
 # from your low-tariff times to their complementary high-tariff gaps:
 #   weekday low tariff:  00:00-00:10;01:10-06:56;07:55-14:11;15:10-18:26;19:25-24:00
-#   weekend/holiday low: 00:00-03:36;04:35-10:06;11:05-16:06;17:05-19:36;20:35-24:00
+#   weekend/holiday low: 00:00-00:50;01:50-10:05;11:05-16:05;17:05-19:35;20:35-24:00
 # "weekend" here also covers Czech public holidays (see holiday_country
 # below) -- D45d treats holidays the same as weekends.
 high_tariff_windows:
@@ -25,16 +25,16 @@ high_tariff_windows:
     start: "18:26"
     end: "19:25"
   - days: ["weekend"]
-    start: "03:36"
-    end: "04:35"
+    start: "00:50"
+    end: "01:50"
   - days: ["weekend"]
-    start: "10:06"
+    start: "10:05"
     end: "11:05"
   - days: ["weekend"]
-    start: "16:06"
+    start: "16:05"
     end: "17:05"
   - days: ["weekend"]
-    start: "19:36"
+    start: "19:35"
     end: "20:35"
 
 # ISO country code for public holidays, treated as "weekend" days above.
